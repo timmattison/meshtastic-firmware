@@ -3,6 +3,7 @@
 #include "NodeDB.h"
 #include "PowerFSM.h"
 #include "ServiceEnvelope.h"
+#include "build_info.h"
 #include "configuration.h"
 #include "main.h"
 #include "mesh/Channels.h"
@@ -815,7 +816,7 @@ void MQTT::perhapsReportToMap()
     memcpy(mapReport.short_name, owner.short_name, sizeof(owner.short_name));
     mapReport.role = config.device.role;
     mapReport.hw_model = owner.hw_model;
-    strncpy(mapReport.firmware_version, optstr(APP_VERSION), sizeof(mapReport.firmware_version));
+    strncpy(mapReport.firmware_version, meshtastic_build_version, sizeof(mapReport.firmware_version));
     mapReport.region = config.lora.region;
     mapReport.modem_preset = config.lora.modem_preset;
     mapReport.has_default_channel = channels.hasDefaultChannel();

@@ -8,6 +8,7 @@
 #include "Throttle.h"
 #include "UIRenderer.h"
 #include "airtime.h"
+#include "build_info.h"
 #include "gps/RTC.h"
 #include "graphics/ScreenFonts.h"
 #include "graphics/SharedUIDisplay.h"
@@ -538,7 +539,7 @@ void drawSystemScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x
     char appversionstr[35];
     char appversionstr_formatted[40];
 
-    const char *ver = optstr(APP_VERSION);
+    const char *ver = meshtastic_build_version;
     char verbuf[32];
     strncpy(verbuf, ver, sizeof(verbuf) - 1);
     verbuf[sizeof(verbuf) - 1] = '\0';

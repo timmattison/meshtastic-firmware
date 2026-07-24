@@ -9,6 +9,7 @@
 #include "PortduinoGlue.h"
 #include "SHA256.h"
 #include "api/ServerAPI.h"
+#include "build_info.h"
 #include "meshUtils.h"
 #include <ErriezCRC32.h>
 #include <Utility.h>
@@ -66,7 +67,7 @@ char *optionMac = nullptr;
 bool verboseEnabled = false;
 bool yamlOnly = false;
 
-const char *argp_program_version = optstr(APP_VERSION);
+const char *argp_program_version = meshtastic_build_version;
 
 char stdoutBuffer[512];
 

@@ -1,6 +1,7 @@
 #include "CryptoEngine.h"
 // #include "NodeDB.h"
 #include "architecture.h"
+#include "build_info.h"
 #include <memory>
 
 #if !(MESHTASTIC_EXCLUDE_PKI)
@@ -34,7 +35,7 @@
 void CryptoEngine::generateKeyPair(uint8_t *pubKey, uint8_t *privKey)
 {
     // Mix in any randomness we can, to make key generation stronger.
-    CryptRNG.begin(optstr(APP_VERSION));
+    CryptRNG.begin(meshtastic_build_version);
 
     uint8_t hardwareEntropy[64] = {0};
     if (HardwareRNG::fill(hardwareEntropy, sizeof(hardwareEntropy), true)) {

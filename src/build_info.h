@@ -26,7 +26,7 @@ extern const char *const meshtastic_build_epoch_str;
 // Unix epoch seconds of midnight (local time) on the build day.
 extern const uint32_t meshtastic_build_epoch;
 
-// Presence marker replacing the old `#ifdef BUILD_EPOCH` guards: the build
+// Presence marker replacing the old `#ifdef`-style build-epoch macro guards: the build
 // script always generates build_info.cpp, so the epoch symbol above is always
 // available to any translation unit that includes this header. A translation
 // unit that does not include this header will see MESHTASTIC_HAS_BUILD_EPOCH

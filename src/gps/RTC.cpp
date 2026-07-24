@@ -1,4 +1,5 @@
 #include "gps/RTC.h"
+#include "build_info.h"
 #include "configuration.h"
 #include "detect/ScanI2C.h"
 #include "main.h"
@@ -112,10 +113,10 @@ RTCSetResult readFromRTC()
         tv.tv_usec = 0;
         uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
 
-#ifdef BUILD_EPOCH
-        if (tv.tv_sec < BUILD_EPOCH) {
+#if MESHTASTIC_HAS_BUILD_EPOCH
+        if (tv.tv_sec < meshtastic_build_epoch) {
             if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
-                LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, BUILD_EPOCH);
+                LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
             }
             return RTCSetResultInvalidTime;
         }
@@ -157,10 +158,10 @@ RTCSetResult readFromRTC()
         tv.tv_usec = 0;
         uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
 
-#ifdef BUILD_EPOCH
-        if (tv.tv_sec < BUILD_EPOCH) {
+#if MESHTASTIC_HAS_BUILD_EPOCH
+        if (tv.tv_sec < meshtastic_build_epoch) {
             if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
-                LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, BUILD_EPOCH);
+                LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
                 lastTimeValidationWarning = millis();
             }
             return RTCSetResultInvalidTime;
@@ -196,10 +197,10 @@ RTCSetResult readFromRTC()
             uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
             LOG_DEBUG("Read RTC time from RX8130CE getDateTime as %02d-%02d-%02d %02d:%02d:%02d (%ld)", t.tm_year + 1900,
                       t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, printableEpoch);
-#ifdef BUILD_EPOCH
-            if (tv.tv_sec < BUILD_EPOCH) {
+#if MESHTASTIC_HAS_BUILD_EPOCH
+            if (tv.tv_sec < meshtastic_build_epoch) {
                 if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
-                    LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, BUILD_EPOCH);
+                    LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
                     lastTimeValidationWarning = millis();
                 }
                 return RTCSetResultInvalidTime;
@@ -221,10 +222,10 @@ RTCSetResult readFromRTC()
         tv.tv_sec = STM32RTC::getInstance().getEpoch();
         tv.tv_usec = 0;
         uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
-#ifdef BUILD_EPOCH
-        if (tv.tv_sec < BUILD_EPOCH) {
+#if MESHTASTIC_HAS_BUILD_EPOCH
+        if (tv.tv_sec < meshtastic_build_epoch) {
             if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
-                LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, BUILD_EPOCH);
+                LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
                 lastTimeValidationWarning = millis();
             }
             return RTCSetResultInvalidTime;
@@ -259,20 +260,20 @@ RTCSetResult perhapsSetRTC(RTCQuality q, const struct timeval *tv, bool forceUpd
     static uint32_t lastSetMsec = 0;
     uint32_t now = millis();
     uint32_t printableEpoch = tv->tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
-#ifdef BUILD_EPOCH
-    if (tv->tv_sec < BUILD_EPOCH) {
+#if MESHTASTIC_HAS_BUILD_EPOCH
+    if (tv->tv_sec < meshtastic_build_epoch) {
         if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
-            LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, BUILD_EPOCH);
+            LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
             lastTimeValidationWarning = millis();
         }
         return RTCSetResultInvalidTime;
-    } else if ((uint64_t)tv->tv_sec > ((uint64_t)BUILD_EPOCH + FORTY_YEARS)) {
+    } else if ((uint64_t)tv->tv_sec > ((uint64_t)meshtastic_build_epoch + FORTY_YEARS)) {
         if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
             // Calculate max allowed time safely to avoid overflow in logging
-            uint64_t maxAllowedTime = (uint64_t)BUILD_EPOCH + FORTY_YEARS;
+            uint64_t maxAllowedTime = (uint64_t)meshtastic_build_epoch + FORTY_YEARS;
             uint32_t maxAllowedPrintable = (maxAllowedTime > UINT32_MAX) ? UINT32_MAX : (uint32_t)maxAllowedTime;
             LOG_WARN("Ignore time (%ld) too far in the future (build epoch: %ld, max allowed: %ld)!", printableEpoch,
-                     (uint32_t)BUILD_EPOCH, maxAllowedPrintable);
+                     (uint32_t)meshtastic_build_epoch, maxAllowedPrintable);
             lastTimeValidationWarning = millis();
         }
         return RTCSetResultInvalidTime;
@@ -426,20 +427,20 @@ RTCSetResult perhapsSetRTC(RTCQuality q, const struct tm &t)
     tv.tv_sec = res;
     tv.tv_usec = 0;                      // time.centisecond() * (10 / 1000);
     uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
-#ifdef BUILD_EPOCH
-    if (tv.tv_sec < BUILD_EPOCH) {
+#if MESHTASTIC_HAS_BUILD_EPOCH
+    if (tv.tv_sec < meshtastic_build_epoch) {
         if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
-            LOG_WARN("Ignore time (%lu) before build epoch (%lu)!", printableEpoch, BUILD_EPOCH);
+            LOG_WARN("Ignore time (%lu) before build epoch (%lu)!", printableEpoch, meshtastic_build_epoch);
             lastTimeValidationWarning = millis();
         }
         return RTCSetResultInvalidTime;
-    } else if ((uint64_t)tv.tv_sec > ((uint64_t)BUILD_EPOCH + FORTY_YEARS)) {
+    } else if ((uint64_t)tv.tv_sec > ((uint64_t)meshtastic_build_epoch + FORTY_YEARS)) {
         if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
             // Calculate max allowed time safely to avoid overflow in logging
-            uint64_t maxAllowedTime = (uint64_t)BUILD_EPOCH + FORTY_YEARS;
+            uint64_t maxAllowedTime = (uint64_t)meshtastic_build_epoch + FORTY_YEARS;
             uint32_t maxAllowedPrintable = (maxAllowedTime > UINT32_MAX) ? UINT32_MAX : (uint32_t)maxAllowedTime;
             LOG_WARN("Ignore time (%lu) too far in the future (build epoch: %lu, max allowed: %lu)!", printableEpoch,
-                     (uint32_t)BUILD_EPOCH, maxAllowedPrintable);
+                     (uint32_t)meshtastic_build_epoch, maxAllowedPrintable);
             lastTimeValidationWarning = millis();
         }
         return RTCSetResultInvalidTime;

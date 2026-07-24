@@ -9,6 +9,7 @@
 #include "NodeDB.h"
 #include "PowerMon.h"
 #include "Throttle.h"
+#include "build_info.h"
 #include "buzz.h"
 #include "concurrency/Periodic.h"
 #include "gps/RTC.h"
@@ -138,9 +139,9 @@ bool isPlausibleNmeaTime(const struct tm &t)
         return false;
     }
 
-#ifdef BUILD_EPOCH
+#if MESHTASTIC_HAS_BUILD_EPOCH
     const int64_t candidate = static_cast<int64_t>(gm_mktime(&t));
-    const int64_t minEpoch = static_cast<int64_t>(BUILD_EPOCH);
+    const int64_t minEpoch = static_cast<int64_t>(meshtastic_build_epoch);
     const int64_t maxEpoch = minEpoch + static_cast<int64_t>(FORTY_YEARS);
     return candidate >= minEpoch && candidate <= maxEpoch;
 #else

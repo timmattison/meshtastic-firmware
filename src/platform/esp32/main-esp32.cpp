@@ -1,5 +1,6 @@
 #include "PowerFSM.h"
 #include "PowerMon.h"
+#include "build_info.h"
 #include "configuration.h"
 #include "esp_task_wdt.h"
 #include "main.h"
@@ -253,8 +254,8 @@ void esp32Setup()
     preferences.putUInt("rebootCounter", rebootCounter);
     // store firmware version and hwrevision for access from OTA firmware
     String fwrev = preferences.getString("firmwareVersion", "");
-    if (fwrev.compareTo(optstr(APP_VERSION)) != 0)
-        preferences.putString("firmwareVersion", optstr(APP_VERSION));
+    if (fwrev.compareTo(meshtastic_build_version) != 0)
+        preferences.putString("firmwareVersion", meshtastic_build_version);
     uint8_t hwven = preferences.getUInt("hwVendor", 0);
     if (hwven != HW_VENDOR)
         preferences.putUInt("hwVendor", HW_VENDOR);
