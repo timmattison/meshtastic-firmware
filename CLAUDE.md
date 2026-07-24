@@ -1,6 +1,7 @@
 # Claude Code instructions
 
-Always run `pio` with the `pio.sh` wrapper script so the tools stay in the current worktree and a global version mismatch doesn't break things.
+- Always run `pio` with the `pio.sh` wrapper script so the tools stay in the current worktree and a global version mismatch doesn't break things.
+- Do not run any meshtastic commands that would circumvent `pio.sh`
 
 > **TL;DR**
 >
