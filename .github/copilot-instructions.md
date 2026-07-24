@@ -4,7 +4,9 @@
 >
 > |                |                                                                                                                        |
 > | -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+> | Build          | `./pio.sh run -e <env>` - never bare `pio` (the wrapper isolates PlatformIO's core dir per worktree)                   |
 > | Local tests    | `./bin/run-tests.sh` (exit 0 GREEN · 1 RED · 2 AMBER · 3 FILTERED)                                                     |
+> | Tooling tests  | `./bin/run-build-tests.sh` (build scripts + `pio.sh`; exit 0 GREEN · 1 RED)                                            |
 > | Hardware tests | [meshtastic/meshtastic-mcp](https://github.com/meshtastic/meshtastic-mcp) (`MESHTASTIC_FIRMWARE_ROOT` → this checkout) |
 > | Format         | `trunk fmt`                                                                                                            |
 > | Mirror docs    | `AGENTS.md` (short pointer for agents that don't read this file) · `CLAUDE.md` (Claude Code)                           |
@@ -511,8 +513,8 @@ To reduce avoidable agent mistakes, assume these tools are available (or install
 
 - **Required CLI basics**: `bash`, `git`, `find`, `grep`, `sed`, `awk`, `xargs`
 - **Strongly recommended**: `rg` (ripgrep) for fast file/text search, `jq` for JSON processing
-- **Build/test tools**: `python3`, `pip`, virtualenv (`python3 -m venv`), `platformio` (`pio`)
-- **Containerized native testing**: `docker` (fallback for non-Linux hosts; macOS can also build natively via `pio run -e native-macos`)
+- **Build/test tools**: `python3`, `pip`, virtualenv (`python3 -m venv`), `platformio` (`pio`, always invoked through this repo's `./pio.sh` wrapper - see **PlatformIO wrapper** below)
+- **Containerized native testing**: `docker` (fallback for non-Linux hosts; macOS can also build natively via `./pio.sh run -e native-macos`)
 
 Fallback expectations for agents:
 
@@ -522,16 +524,23 @@ Fallback expectations for agents:
 
 Uses **PlatformIO** with custom scripts:
 
-- `bin/platformio-pre.py` - Pre-build script
+- `bin/platformio-pre.py` - `pre:` extra script: names the build artifacts and generates `src/build_info.cpp` (see **Generated build identity** below)
+- `bin/build_info_gen.py` - the pure, importable helper behind it: renders and writes that generated translation unit, computes the build epoch, and assembles the stable global build flags. Not to be confused with the long-standing `bin/buildinfo.py`, which just prints one `version.properties` value (`./bin/buildinfo.py long`)
 - `bin/platformio-custom.py` - Custom build logic, manifest generation
+
+### PlatformIO wrapper (`./pio.sh`)
+
+**Run PlatformIO through `./pio.sh`, never bare `pio`.** The wrapper forwards every argument to `pio` unchanged after pointing `PLATFORMIO_CORE_DIR` at `<worktree>/.platformio`, so each git worktree gets its own toolchains, frameworks and package cache.
+
+Why it exists: worktrees pin different ESP32 platforms - `develop` builds against pioarduino's `platform-espressif32` (Arduino-ESP32 core 3.x, see `variants/esp32/esp32-common.ini`), while the 2.7.0 line pins the official `espressif32@6.11.0` (core 2.0.17) - and both install a package literally named `framework-arduinoespressif32` into the _shared_ `~/.platformio` cache at incompatible versions. Whichever built last wins that folder, so the next build against the other platform can no longer find its required version and dies inside `arduino.py` with `TypeError: expected str, bytes or os.PathLike object, not NoneType`. A per-worktree core dir keeps the two platform lines apart; the price is re-downloading a toolchain once per worktree. `pio.test.sh` covers the wrapper's behavior.
 
 Build commands:
 
 ```bash
-pio run -e tbeam              # Build specific target
-pio run -e tbeam -t upload    # Build and upload
-pio run -e native             # Build native/Linux version
-pio run -e native-macos       # Build headless macOS meshtasticd (Homebrew prereqs in variants/native/portduino/platformio.ini)
+./pio.sh run -e tbeam              # Build specific target
+./pio.sh run -e tbeam -t upload    # Build and upload
+./pio.sh run -e native             # Build native/Linux version
+./pio.sh run -e native-macos       # Build headless macOS meshtasticd (Homebrew prereqs in variants/native/portduino/platformio.ini)
 ```
 
 ### Build Manifest
@@ -540,6 +549,14 @@ pio run -e native-macos       # Build headless macOS meshtasticd (Homebrew prere
 
 - `hasMui`, `hasInkHud` - UI capability flags (overridable via `custom_meshtastic_has_mui`, `custom_meshtastic_has_ink_hud`)
 - Architecture normalization (e.g., `esp32s3` → `esp32-s3` for API compatibility)
+
+### Generated build identity (`src/build_info.cpp`)
+
+`src/build_info.cpp` is **generated and gitignored** - never edit it, never commit it. It shows up as an untracked-but-ignored file after your first build because `bin/platformio-pre.py` writes it (via `bin/build_info_gen.py`) on every run.
+
+- **What it carries**: the volatile build identity - the full version string (it embeds the git short SHA, so it changes on every commit) and the build epoch (midnight local time on the build day, so it changes daily). Confining both to one translation unit means a new commit or the daily rollover recompiles a single object plus a relink. They used to ride the _global_ `-DAPP_VERSION=` / `-DBUILD_EPOCH=` compile flags, and SCons keys each object's freshness on its exact command line, so every object in `src/` rebuilt instead.
+- **How to read it**: include `src/build_info.h` and use its stable `extern` declarations - `meshtastic_build_version`, `meshtastic_build_epoch`, `meshtastic_build_epoch_str`. Do not reintroduce `-DAPP_VERSION=` or `-DBUILD_EPOCH=` on any compile line; `bin/test_build_tooling.py` scans every build surface (`platformio.ini`, `variants/`, `bin/`, `extra_scripts/`, the workflows) for them. `APP_VERSION_SHORT` is unaffected - it is stable, stays a normal `-D` macro, and `src/configuration.h` still requires it.
+- **Why it must be a `pre:` script**: PlatformIO runs the `pre:` extra scripts, then `$BUILD_SCRIPT` (whose `BuildSources()` eagerly globs `src/` into a concrete file list), then the `post:` scripts - and an _unprefixed_ `extra_scripts` entry is a post script. Because the file is gitignored, a generator running after the glob creates it too late to be compiled on a clean checkout, and the link fails with undefined references to `meshtastic_build_version` / `meshtastic_build_epoch`.
 
 ## Common Tasks
 
@@ -607,6 +624,7 @@ The project uses GitHub Actions extensively for CI/CD. Key workflows are in `.gi
   - Uses `bin/generate_ci_matrix.py` to dynamically generate build targets
   - Builds all supported hardware variants
   - PRs build a subset (`--level pr`) for faster feedback
+  - Also runs the `build-tooling-tests` job (`./bin/run-build-tests.sh`) - python3 + bash only, no toolchain, so the build-tooling guards can fail a PR in seconds
 
 - **`trunk_check.yml`** - Code quality checks on PRs
   - Runs Trunk.io for linting and formatting
@@ -723,19 +741,31 @@ RESULT: FILTERED 1/24 suites ran (not run: test_admin_radio test_atak …) - fil
 
 > **Copilot interface note:** When running tests via the Copilot chat interface, edits made through the chat may not be reflected in the on-disk files that the test binary reads. If tests pass in chat but fail locally (or vice versa), verify the files on disk match what you expect before trusting the result. Always confirm with a local terminal run.
 
-Raw `pio test` (no sanitizers, no verdict logic) - use only when you need to override the env:
+Raw `./pio.sh test` (no sanitizers, no verdict logic) - use only when you need to override the env:
 
 ```bash
-~/.platformio/penv/bin/python -m platformio test -e native -f test_your_suite > /tmp/test_out.txt 2>&1
+./pio.sh test -e native -f test_your_suite > /tmp/test_out.txt 2>&1
 grep -E 'error:|PASS|FAIL|succeeded|failed' /tmp/test_out.txt
 tail -15 /tmp/test_out.txt
 ```
 
-Do **not** pipe `pio test` - line-buffering makes the terminal appear hung and hides build errors.
+Do **not** pipe `./pio.sh test` - line-buffering makes the terminal appear hung and hides build errors.
 
 Simulation testing: `bin/test-simulator.sh`
 
 Quick entry point for new test modules: `test/README.md` (native unit-test authoring guide, skeleton, pitfalls, and setup checklist).
+
+### Build-tooling tests (`bin/run-build-tests.sh`)
+
+`bin/run-tests.sh` runs the _firmware_ suites under `test/`. The tests that cover the _build tooling_ - the scripts under `bin/`, the `./pio.sh` wrapper - live outside that tree and have their own runner:
+
+```bash
+./bin/run-build-tests.sh            # run everything discovered (exit 0 GREEN, 1 RED)
+./bin/run-build-tests.sh --list     # print what would run, run nothing
+./bin/run-build-tests.sh --verbose  # also echo output for passing tests
+```
+
+The runner **discovers** its tests rather than listing them - anything matching `bin/test_*.py`, `*.test.sh` or `bin/*.test.sh` is enrolled automatically (today: `bin/test_build_tooling.py`, `bin/test_size_scripts.py`, `pio.test.sh`), so a new guard test needs no registration. Discovering nothing is itself a RED verdict. Every test runs even after one fails, and output is echoed only for failures. CI invokes it from the `build-tooling-tests` job in `main_matrix.yml`; before that job existed these tests were green forever because nothing ran them.
 
 ### Hardware-in-the-loop tests ([meshtastic-mcp](https://github.com/meshtastic/meshtastic-mcp))
 

@@ -1,6 +1,6 @@
 # Claude Code instructions
 
-- Always run `pio` with the `pio.sh` wrapper script so the tools stay in the current worktree and a global version mismatch doesn't break things.
+- Always run `pio` with the `pio.sh` wrapper script so the tools stay in the current worktree and a global version mismatch doesn't break things. `./pio.sh` pins `PLATFORMIO_CORE_DIR` to `<worktree>/.platformio`, so worktrees pinning different ESP32 platforms stop clobbering each other's shared `framework-arduinoespressif32` package.
 - Do not run any meshtastic commands that would circumvent `pio.sh`
 - All pull requests target `main` as the base branch (not `develop`).
 
@@ -8,19 +8,22 @@
 >
 > |                |                                                                                                                        |
 > | -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+> | Build          | `./pio.sh run -e <env>` - never bare `pio`                                                                             |
 > | Local tests    | `./bin/run-tests.sh` (exit 0 GREEN · 1 RED · 2 AMBER · 3 FILTERED)                                                     |
+> | Tooling tests  | `./bin/run-build-tests.sh` (build scripts + `pio.sh`; exit 0 GREEN · 1 RED)                                            |
 > | Hardware tests | [meshtastic/meshtastic-mcp](https://github.com/meshtastic/meshtastic-mcp) (`MESHTASTIC_FIRMWARE_ROOT` → this checkout) |
 > | Format         | `trunk fmt`                                                                                                            |
 > | Mirror docs    | `.github/copilot-instructions.md` (canonical) · `AGENTS.md`                                                            |
 >
 > **Need this? It's here.**
 >
-> |                                             |                                                            |
-> | ------------------------------------------- | ---------------------------------------------------------- |
-> | General helpers (clamp, UTF-8, string fmt…) | `src/meshUtils.h`                                          |
-> | Logging macros (LOG_DEBUG / INFO / WARN…)   | `src/DebugConfiguration.h`                                 |
-> | New module skeleton                         | inherit `ProtobufModule<T>` in `src/mesh/ProtobufModule.h` |
-> | Observer / event wiring                     | `src/Observer.h`                                           |
+> |                                             |                                                                                                      |
+> | ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+> | General helpers (clamp, UTF-8, string fmt…) | `src/meshUtils.h`                                                                                    |
+> | Logging macros (LOG_DEBUG / INFO / WARN…)   | `src/DebugConfiguration.h`                                                                           |
+> | New module skeleton                         | inherit `ProtobufModule<T>` in `src/mesh/ProtobufModule.h`                                           |
+> | Observer / event wiring                     | `src/Observer.h`                                                                                     |
+> | Version / build epoch (git SHA, epoch)      | `src/build_info.h` externs; `src/build_info.cpp` is generated + gitignored - never edit or commit it |
 
 **Read `.github/copilot-instructions.md` first.** That file is the canonical agent-facing document for this repo. It covers project layout, coding conventions, the build system, CI/CD, the native C++ test suite, and the MCP Server & Hardware Test Harness. Read it top-to-bottom before starting any non-trivial change.
 
