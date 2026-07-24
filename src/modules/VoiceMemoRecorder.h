@@ -42,9 +42,16 @@ class Recorder
     // false when the event was a no-op in the current state.
     bool handle(Event event)
     {
-        // Not yet implemented: the machine ignores every event.
-        (void)event;
-        return false;
+        const State previous = state_;
+        switch (event) {
+        case Event::Open: // Open (or stay on) the Voice Memo page.
+            state_ = State::Ready;
+            break;
+        case Event::Cancel: // Leave the page.
+            state_ = State::Idle;
+            break;
+        }
+        return state_ != previous;
     }
 
   private:
