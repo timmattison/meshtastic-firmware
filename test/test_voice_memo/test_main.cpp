@@ -1,4 +1,5 @@
 #include "modules/VoiceMemoRecorder.h"
+#include <cstdlib> // exit()
 #include <unity.h>
 
 using voicememo::Event;
