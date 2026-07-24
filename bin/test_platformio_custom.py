@@ -80,6 +80,23 @@ def test_render_build_info_cpp_epoch_int_and_str_are_identical():
     assert from_int == from_str, (from_int, from_str)
 
 
+def _read_source(name):
+    with open(os.path.join(os.path.dirname(__file__), name)) as f:
+        return f.read()
+
+
+def test_platformio_custom_uses_assemble_global_flags_no_global_volatile():
+    """Regression guard (issue #8): the build script must assemble its GLOBAL projenv
+    flags via assemble_global_flags() and must never re-introduce the volatile
+    -DAPP_VERSION= / -DBUILD_EPOCH= macros onto the global compile line. (The separate
+    meshtastic-device-ui lib injection uses a ("APP_VERSION", ...) tuple, not the
+    -DAPP_VERSION= string, so it is intentionally not matched here.)"""
+    src = _read_source("platformio-custom.py")
+    assert "assemble_global_flags(" in src, "build script no longer calls assemble_global_flags()"
+    assert "-DAPP_VERSION=" not in src, "global -DAPP_VERSION= injection present/re-introduced"
+    assert "-DBUILD_EPOCH=" not in src, "global -DBUILD_EPOCH= injection present/re-introduced"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     passed = 0
