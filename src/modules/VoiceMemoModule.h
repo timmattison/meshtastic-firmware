@@ -15,6 +15,18 @@
 #define MESHTASTIC_HAS_VOICEMEMO 1
 #endif
 
+// INPUT_BROKER_SELECT_LONG opens the Voice Memo page (see VoiceMemoModule.cpp).
+// GamesModule binds the same long-press, and the InputBroker observer chain
+// short-circuits on the first consumer that returns non-zero (Observer.h), so with
+// both modules compiled in one silently shadows the other's SELECT_LONG. Fail the
+// build loudly rather than ship that conflict; give one of them a distinct gesture
+// before enabling both on a single board. BASEUI_HAS_GAMES is always defined (0/1)
+// by configuration.h, so test it by value; MESHTASTIC_HAS_VOICEMEMO is only
+// conditionally defined, so test it with defined().
+#if defined(MESHTASTIC_HAS_VOICEMEMO) && BASEUI_HAS_GAMES
+#error "Voice Memo and Games both bind INPUT_BROKER_SELECT_LONG; resolve the gesture conflict before enabling both."
+#endif
+
 #ifdef MESHTASTIC_HAS_VOICEMEMO
 
 #include "SinglePortModule.h"
