@@ -71,6 +71,17 @@ if printf '00000000 T _Z4mainv\n' | fh_symbols_have_tftsetup; then
   note_fail "fh_symbols_have_tftsetup should REJECT a dump lacking tftSetup (guard never fails)"
 fi
 
+# Regression: fh_main runs the guard under `set -o pipefail` as `nm <elf> |
+# fh_symbols_have_tftsetup`. If the matcher exits early (grep -q) it SIGPIPEs
+# nm, and pipefail then reports the whole pipeline as FAILED even though the
+# symbol matched -- which would make the guard reject a valid MUI binary. A
+# large producer whose match comes first must still succeed under pipefail.
+if ! (
+  set -o pipefail
+  { printf 'tftSetup\n'; seq 1 200000; } | fh_symbols_have_tftsetup
+); then
+  note_fail "fh_symbols_have_tftsetup must not SIGPIPE its producer under pipefail"
+fi
 
 if [ "${fail}" -eq 0 ]; then
   echo "PASS: flash.sh erases before upload and enforces the HAS_TFT guard"
