@@ -26,9 +26,11 @@ extern const char *const meshtastic_build_epoch_str;
 // Unix epoch seconds of midnight (local time) on the build day.
 extern const uint32_t meshtastic_build_epoch;
 
-// Presence marker replacing the old `#ifdef`-style build-epoch macro guards: the build
-// script always generates build_info.cpp, so the epoch symbol above is always
-// available to any translation unit that includes this header. A translation
-// unit that does not include this header will see MESHTASTIC_HAS_BUILD_EPOCH
-// undefined and can fall back accordingly.
-#define MESHTASTIC_HAS_BUILD_EPOCH 1
+// Read these symbols unguarded. There is deliberately no "do we have a build epoch?"
+// feature macro to wrap them in, because such a macro cannot be anything but harmful
+// here: the build script always generates build_info.cpp, so it could only ever be true
+// for a translation unit that includes this header, while a translation unit that
+// forgot the include would see it undefined, have `#if` silently evaluate it as 0, and
+// quietly compile a stale hardcoded fallback instead of failing. Without a guard, that
+// same mistake is a loud compile error on an undeclared identifier -- which is the
+// behaviour we want, and the reason the old `#ifdef BUILD_EPOCH` guards are gone.

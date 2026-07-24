@@ -802,9 +802,7 @@ void setup()
 
     // Hello
     printInfo();
-#if MESHTASTIC_HAS_BUILD_EPOCH
     LOG_INFO("Build timestamp: %ld", (long)meshtastic_build_epoch);
-#endif
 
 #ifdef ARCH_ESP32
     esp32Setup();

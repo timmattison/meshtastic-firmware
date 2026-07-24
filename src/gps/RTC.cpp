@@ -113,14 +113,12 @@ RTCSetResult readFromRTC()
         tv.tv_usec = 0;
         uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
 
-#if MESHTASTIC_HAS_BUILD_EPOCH
         if (tv.tv_sec < meshtastic_build_epoch) {
             if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
                 LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
             }
             return RTCSetResultInvalidTime;
         }
-#endif
 
         LOG_DEBUG("Read RTC time from RV3028 getTime as %02d-%02d-%02d %02d:%02d:%02d (%ld)", t.tm_year + 1900, t.tm_mon + 1,
                   t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, printableEpoch);
@@ -158,7 +156,6 @@ RTCSetResult readFromRTC()
         tv.tv_usec = 0;
         uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
 
-#if MESHTASTIC_HAS_BUILD_EPOCH
         if (tv.tv_sec < meshtastic_build_epoch) {
             if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
                 LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
@@ -166,7 +163,6 @@ RTCSetResult readFromRTC()
             }
             return RTCSetResultInvalidTime;
         }
-#endif
 
         LOG_DEBUG("Read RTC time from %s getDateTime as %02d-%02d-%02d %02d:%02d:%02d (%ld)", rtc.getChipName(), t.tm_year + 1900,
                   t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, printableEpoch);
@@ -197,7 +193,6 @@ RTCSetResult readFromRTC()
             uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
             LOG_DEBUG("Read RTC time from RX8130CE getDateTime as %02d-%02d-%02d %02d:%02d:%02d (%ld)", t.tm_year + 1900,
                       t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, printableEpoch);
-#if MESHTASTIC_HAS_BUILD_EPOCH
             if (tv.tv_sec < meshtastic_build_epoch) {
                 if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
                     LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
@@ -205,7 +200,6 @@ RTCSetResult readFromRTC()
                 }
                 return RTCSetResultInvalidTime;
             }
-#endif
             if (currentQuality == RTCQualityNone) {
                 RTCQuality oldQuality = currentQuality;
                 timeStartMsec = now;
@@ -222,7 +216,6 @@ RTCSetResult readFromRTC()
         tv.tv_sec = STM32RTC::getInstance().getEpoch();
         tv.tv_usec = 0;
         uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
-#if MESHTASTIC_HAS_BUILD_EPOCH
         if (tv.tv_sec < meshtastic_build_epoch) {
             if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
                 LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
@@ -230,7 +223,6 @@ RTCSetResult readFromRTC()
             }
             return RTCSetResultInvalidTime;
         }
-#endif
         if (currentQuality == RTCQualityNone) {
             RTCQuality oldQuality = currentQuality;
             timeStartMsec = now;
@@ -260,7 +252,6 @@ RTCSetResult perhapsSetRTC(RTCQuality q, const struct timeval *tv, bool forceUpd
     static uint32_t lastSetMsec = 0;
     uint32_t now = millis();
     uint32_t printableEpoch = tv->tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
-#if MESHTASTIC_HAS_BUILD_EPOCH
     if (tv->tv_sec < meshtastic_build_epoch) {
         if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
             LOG_WARN("Ignore time (%ld) before build epoch (%ld)!", printableEpoch, meshtastic_build_epoch);
@@ -278,7 +269,6 @@ RTCSetResult perhapsSetRTC(RTCQuality q, const struct timeval *tv, bool forceUpd
         }
         return RTCSetResultInvalidTime;
     }
-#endif
 
     bool shouldSet;
     if (forceUpdate) {
@@ -427,7 +417,6 @@ RTCSetResult perhapsSetRTC(RTCQuality q, const struct tm &t)
     tv.tv_sec = res;
     tv.tv_usec = 0;                      // time.centisecond() * (10 / 1000);
     uint32_t printableEpoch = tv.tv_sec; // Print lib only supports 32 bit but time_t can be 64 bit on some platforms
-#if MESHTASTIC_HAS_BUILD_EPOCH
     if (tv.tv_sec < meshtastic_build_epoch) {
         if (Throttle::isWithinTimespanMs(lastTimeValidationWarning, TIME_VALIDATION_WARNING_INTERVAL_MS) == false) {
             LOG_WARN("Ignore time (%lu) before build epoch (%lu)!", printableEpoch, meshtastic_build_epoch);
@@ -445,7 +434,6 @@ RTCSetResult perhapsSetRTC(RTCQuality q, const struct tm &t)
         }
         return RTCSetResultInvalidTime;
     }
-#endif
 
     // LOG_DEBUG("Got time from GPS month=%d, year=%d, unixtime=%ld", t.tm_mon, t.tm_year, tv.tv_sec);
     if (t.tm_year < 0 || t.tm_year >= 300) {

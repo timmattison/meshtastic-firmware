@@ -139,14 +139,10 @@ bool isPlausibleNmeaTime(const struct tm &t)
         return false;
     }
 
-#if MESHTASTIC_HAS_BUILD_EPOCH
     const int64_t candidate = static_cast<int64_t>(gm_mktime(&t));
     const int64_t minEpoch = static_cast<int64_t>(meshtastic_build_epoch);
     const int64_t maxEpoch = minEpoch + static_cast<int64_t>(FORTY_YEARS);
     return candidate >= minEpoch && candidate <= maxEpoch;
-#else
-    return true;
-#endif
 }
 
 template <typename T> bool sawNmeaSentenceAtBaud(T *serialGps, uint32_t timeoutMs)
