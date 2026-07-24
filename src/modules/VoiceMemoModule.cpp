@@ -7,8 +7,11 @@
 VoiceMemoModule *voiceMemoModule;
 
 // Long trackball press: the gesture that opens the Voice Memo page from the
-// normal carousel. The classic UI leaves INPUT_BROKER_SELECT_LONG unused, so it
-// does not collide with frame navigation.
+// normal carousel. In the default classic T-Deck build nothing else navigates on
+// INPUT_BROKER_SELECT_LONG -- GamesModule (the other consumer) is compiled out
+// unless BASEUI_HAS_GAMES=1, and BuzzerFeedbackThread only plays a click and
+// passes the event through. Enabling Games on this board reintroduces the
+// conflict; VoiceMemoModule.h fails the build in that case (see the #error there).
 static constexpr input_broker_event VOICE_MEMO_OPEN_EVENT = INPUT_BROKER_SELECT_LONG;
 
 VoiceMemoModule::VoiceMemoModule() : SinglePortModule("voicememo", meshtastic_PortNum_PRIVATE_APP)

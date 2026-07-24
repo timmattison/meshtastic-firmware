@@ -37,7 +37,8 @@
 //
 // Follows the CannedMessageModule launched-page pattern: the module observes the
 // InputBroker; while idle it watches for the open gesture (a long trackball
-// press, INPUT_BROKER_SELECT_LONG, which the classic carousel leaves unused).
+// press, INPUT_BROKER_SELECT_LONG, which nothing else navigates on in the default
+// classic build -- see VoiceMemoModule.cpp and the BASEUI_HAS_GAMES guard above).
 // Opening the page requests screen focus and inserts a frame into the carousel;
 // cancel/back removes the frame and restores the normal frame set.
 //
