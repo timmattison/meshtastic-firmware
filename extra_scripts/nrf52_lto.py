@@ -89,10 +89,13 @@ def _is_board_variant(node, path):
 
 
 # projenv is the construction env PlatformIO uses to compile project sources (src/ + the board
-# variant). Unlike the bare framework env captured above, it carries the -DAPP_VERSION... flags
-# and the generated-protobuf include path (pb.h) that bin/platformio-custom.py appends *after*
-# this pre-script's eval. It isn't exported yet at eval time, but it is by the time the build
-# middleware fires -- so fetch it lazily from SCons' export registry, falling back to env.
+# variant). Unlike the bare framework env captured above, it carries the stable app-identity
+# flags (-DAPP_VERSION_SHORT/-DAPP_ENV/-DAPP_REPO) + user-pref flags and the generated-protobuf
+# include path (pb.h) that bin/platformio-custom.py appends *after* this pre-script's eval. (The
+# volatile version values -- git SHA + build epoch -- are no longer flags at all; they live in
+# the generated src/build_info.cpp TU per issue #8.) projenv isn't exported yet at eval time, but
+# it is by the time the build middleware fires -- so fetch it lazily from SCons' export registry,
+# falling back to env.
 _projenv_cache = []
 
 
@@ -109,9 +112,10 @@ def _get_projenv():
 
 def _variant_ccflags(target, source, env, for_signature):
     # Deferred CCFLAGS for the board variant recompile. SCons calls this while substituting the
-    # compile command (build phase), so projenv's CCFLAGS now include the -DAPP_VERSION... flags
-    # that bin/platformio-custom.py appends as a POST extra_script. -fno-lto goes last to override
-    # the inherited -flto and keep the variant's strong initVariant() out of whole-image LTO.
+    # compile command (build phase), so projenv's CCFLAGS now include the stable app-identity
+    # flags (-DAPP_VERSION_SHORT/-DAPP_ENV/-DAPP_REPO) + user prefs that bin/platformio-custom.py
+    # appends as a POST extra_script. -fno-lto goes last to override the inherited -flto and keep
+    # the variant's strong initVariant() out of whole-image LTO.
     return list(_get_projenv()["CCFLAGS"]) + ["-fno-lto"]
 
 
@@ -135,16 +139,17 @@ def _no_lto(node):
         )
     if _is_board_variant(node, path):
         # The board variant is a project source, not a framework object: it can #include
-        # configuration.h/sleep.h, which need the -DAPP_VERSION... define and the generated-
-        # protobuf include path (pb.h). Recompile it with projenv, which carries both.
+        # configuration.h/sleep.h, which need the -DAPP_VERSION_SHORT define (configuration.h
+        # #errors "APP_VERSION_SHORT must be set" without it) and the generated-protobuf include
+        # path (pb.h). Recompile it with projenv, which carries both.
         #
-        # TIMING: those -DAPP_VERSION... flags are appended to projenv by bin/platformio-custom.py,
+        # TIMING: those app-identity flags are appended to projenv by bin/platformio-custom.py,
         # which is an unprefixed extra_script -> PlatformIO runs it as a POST script, i.e. AFTER
         # $BUILD_SCRIPT, where this build middleware already fired. So projenv["CCFLAGS"] read HERE
-        # is a pre-append snapshot with no -DAPP_VERSION -> the recompile dies with
-        # "APP_VERSION must be set". Defer the read to a callable construction variable: SCons
+        # is a pre-append snapshot with no -DAPP_VERSION_SHORT -> the recompile dies with
+        # "APP_VERSION_SHORT must be set". Defer the read to a callable construction variable: SCons
         # invokes it during command substitution (after every SConscript, post-scripts included),
-        # by which point projenv carries the version flags. -fno-lto is appended last so it wins.
+        # by which point projenv carries the app-identity flags. -fno-lto is appended last so it wins.
         build_env = _get_projenv()
         return build_env.Object(
             node,

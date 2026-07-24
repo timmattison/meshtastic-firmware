@@ -1,0 +1,218 @@
+"""Generator for src/build_info.cpp - isolates the volatile version macros (issue #8).
+
+Not to be confused with ``bin/buildinfo.py``, the unrelated one-line CLI that prints a
+single property out of ``version.properties``. This module generates the C++ translation
+unit that carries the build identity; that one answers ``./bin/buildinfo.py long``.
+
+Background
+----------
+``bin/platformio-custom.py`` historically appended ``-DAPP_VERSION=<ver+gitSHA>``
+and ``-DBUILD_EPOCH=<epoch>`` to the *global* project (``src/``) ``CCFLAGS``.
+SCons keys each object file's freshness on the exact compile command line, so
+embedding those two values in the global flags forced *every* ``src/``
+translation unit to recompile whenever the SHA changed (every commit) or the
+epoch changed (every day) - even when nothing else changed.
+
+Fix
+---
+This module keeps the two volatile values off the global flags entirely and
+instead bakes them into ONE generated translation unit (``src/build_info.cpp``).
+Every other translation unit reads them through stable ``extern`` symbols
+declared in ``build_info.h``, so only the single generated object recompiles
+when the SHA or epoch changes.
+
+This module is deliberately pure and importable: it performs no SCons imports
+and no ``Import(...)`` calls, so it can be unit-tested in isolation. The SCons
+glue that calls these helpers lives in ``bin/platformio-pre.py`` (which writes
+the generated translation unit) and ``bin/platformio-custom.py`` (which
+assembles the global flags and the build manifest).
+
+Ordering
+--------
+Generation MUST happen from a ``pre:`` extra script. PlatformIO's
+``builder/main.py`` runs the ``pre:`` scripts, then ``$BUILD_SCRIPT`` (whose
+``BuildSources()`` eagerly globs ``$PROJECT_SRC_DIR`` into a concrete file
+list), then the ``post:`` scripts - and an *unprefixed* ``extra_scripts`` entry
+is a POST script. Because ``src/build_info.cpp`` is gitignored, a generator
+running post-glob would create it too late to be compiled on any clean
+checkout, and the link would fail with undefined references to
+``meshtastic_build_version`` / ``meshtastic_build_epoch``.
+"""
+
+import json
+from datetime import datetime
+from os.path import join
+
+# The two macros whose values change on every commit (git SHA) or every day
+# (build epoch). These are the ones issue #8 removes from the global CCFLAGS and
+# relocates into the generated translation unit.
+VOLATILE_MACROS = ("APP_VERSION", "BUILD_EPOCH")
+
+# Location of the generated translation unit, relative to the PlatformIO project
+# directory. Kept here so callers never have to spell the path themselves - and
+# so ``.gitignore``'s ``/src/build_info.cpp`` entry has exactly one counterpart.
+GENERATED_TU_RELPATH = ("src", "build_info.cpp")
+
+# The script that generates the translation unit, named in the banner of the generated
+# file so a reader of that machine-written, gitignored source can find its producer.
+# It cannot be derived at runtime - this module is imported, not the generator, and the
+# helpers below are also called straight from the tests - so it is one constant here,
+# and bin/test_build_tooling.py cross-checks it against the `pre:` extra_scripts
+# entry in platformio.ini, which is what actually runs the generation.
+GENERATOR_SCRIPT_RELPATH = "bin/platformio-pre.py"
+
+# Memoized result of :func:`compute_build_epoch`; see its docstring for why the
+# value is computed once per process rather than per call.
+_build_epoch = None
+
+
+def assemble_global_flags(version_short, pioenv, repo_owner, pref_flags=()):
+    """Return the ``-D`` flags that belong on the GLOBAL projenv ``CCFLAGS``.
+
+    The returned list contains only the *stable* macros plus the user-preference
+    flags, so the global compile command line no longer changes on every commit
+    or every day:
+
+    * ``-DAPP_VERSION_SHORT=<version_short>``
+    * ``-DAPP_ENV=<pioenv>``
+    * ``-DAPP_REPO=<repo_owner>``
+    * every entry of ``pref_flags``, in order
+
+    It deliberately EXCLUDES the volatile ``-DAPP_VERSION=`` and
+    ``-DBUILD_EPOCH=`` macros (see :data:`VOLATILE_MACROS`); those now live in
+    the generated translation unit produced by :func:`render_build_info_cpp`.
+
+    Args:
+        version_short: The short firmware version (e.g. ``"2.8.0"``).
+        pioenv: The active PlatformIO environment / target name.
+        repo_owner: The ``owner/repo`` slug of the git origin.
+        pref_flags: An iterable of already-formatted ``-D`` user-preference
+            flags to append verbatim, preserving order.
+
+    Returns:
+        A ``list[str]`` of ``-D`` flags for the global ``CCFLAGS``.
+    """
+    return [
+        "-DAPP_VERSION_SHORT=" + version_short,
+        "-DAPP_ENV=" + pioenv,
+        "-DAPP_REPO=" + repo_owner,
+    ] + list(pref_flags)
+
+
+def render_build_info_cpp(version_long, build_epoch):
+    """Render the C++ source for the generated ``src/build_info.cpp``.
+
+    This single translation unit is the only place the volatile values are
+    baked in, so it is the only object that recompiles when the git SHA or the
+    build epoch changes (see the module docstring and issue #8). Every other
+    translation unit reads these values through the stable ``extern`` symbols
+    declared in ``build_info.h``.
+
+    ``version_long`` reaches a C++ string literal, so it is escaped with
+    ``json.dumps`` rather than concatenated raw: JSON's string escaping is a
+    compatible subset of C++'s for this content (``\\`` and ``"`` escapes, plus
+    ``\\uXXXX`` for anything non-ASCII, which C++ accepts as a universal
+    character name). Today's ``<semver>.<git short sha>`` needs no escaping and
+    renders byte-for-byte as before, but a future version scheme or an oddly
+    named tag must not be able to emit a translation unit that fails to compile.
+
+    Args:
+        version_long: The long firmware version string, including the git SHA
+            (e.g. ``"2.8.0.abc1234"``).
+        build_epoch: The build epoch, either an ``int`` or a numeric ``str``.
+            It is normalized with ``int(build_epoch)`` so both forms produce
+            byte-for-byte identical output - and so it can never carry anything
+            that would need escaping.
+
+    Returns:
+        The full C++ source text for ``src/build_info.cpp`` as a ``str``.
+    """
+    epoch = int(build_epoch)
+    return (
+        "// GENERATED by " + GENERATOR_SCRIPT_RELPATH + " - DO NOT EDIT OR COMMIT.\n"
+        "// Isolates the volatile version macros (git SHA + build epoch) into a\n"
+        "// single translation unit so only this object recompiles per commit/day (#8).\n"
+        '#include "build_info.h"\n'
+        "const char *const meshtastic_build_version = " + json.dumps(version_long) + ";\n"
+        'const char *const meshtastic_build_epoch_str = "' + str(epoch) + '";\n'
+        "const uint32_t meshtastic_build_epoch = " + str(epoch) + "u;\n"
+    )
+
+
+def build_info_cpp_path(project_dir):
+    """Return the absolute path of the generated translation unit.
+
+    Args:
+        project_dir: The PlatformIO ``$PROJECT_DIR`` (the repository root).
+
+    Returns:
+        The path of ``src/build_info.cpp`` inside ``project_dir`` as a ``str``.
+    """
+    return join(project_dir, *GENERATED_TU_RELPATH)
+
+
+def write_build_info_cpp(project_dir, version_long, build_epoch):
+    """Generate ``src/build_info.cpp``, rewriting it only when its content changes.
+
+    The compare-before-write is load-bearing rather than a micro-optimisation:
+    SCons rebuilds an object whose source is *newer* than it, so unconditionally
+    rewriting the file would bump its mtime on every single build and recompile
+    ``build_info.o`` (plus relink) even when the SHA and the epoch are unchanged.
+    Only rewriting on a genuine content change means a no-op rebuild stays a
+    no-op - the point of issue #8.
+
+    Call this from a ``pre:`` extra script only; see the module docstring for why
+    a post-glob generator produces a link failure on a clean checkout.
+
+    Args:
+        project_dir: The PlatformIO ``$PROJECT_DIR`` (the repository root).
+        version_long: The long firmware version string including the git SHA.
+        build_epoch: The build epoch, an ``int`` or a numeric ``str``.
+
+    Returns:
+        ``True`` if the file was (re)written, ``False`` if it was already current.
+    """
+    path = build_info_cpp_path(project_dir)
+    source = render_build_info_cpp(version_long, build_epoch)
+    try:
+        with open(path) as existing:
+            if existing.read() == source:
+                return False
+    except OSError:
+        pass
+    with open(path, "w") as out:
+        out.write(source)
+    return True
+
+
+def midnight_epoch(reference):
+    """Unix epoch seconds of midnight (local time) on ``reference``'s calendar day.
+
+    Args:
+        reference: A ``datetime.datetime`` somewhere in the day of interest.
+
+    Returns:
+        An ``int`` epoch-seconds value.
+    """
+    return int(reference.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+
+
+def compute_build_epoch():
+    """The build epoch: midnight (local time) on the day this build started.
+
+    The value reaches two independent artifacts - the generated translation unit
+    written by ``bin/platformio-pre.py`` and the ``build_epoch`` field of the
+    build manifest written by ``bin/platformio-custom.py``. Those two run at
+    opposite ends of the same ``pio run`` process, so the result is computed once
+    and memoized: a build that spans local midnight then still stamps one single
+    epoch into both, instead of the TU and the manifest disagreeing. A fresh
+    process (i.e. the next build) recomputes it, which is exactly the daily
+    rollover the epoch is meant to track.
+
+    Returns:
+        An ``int`` epoch-seconds value.
+    """
+    global _build_epoch
+    if _build_epoch is None:
+        _build_epoch = midnight_epoch(datetime.now())
+    return _build_epoch

@@ -6,6 +6,7 @@
 
 #include "main.h"
 
+#include "build_info.h"
 #include "gps/RTC.h"
 
 using namespace NicheGraphics;
@@ -592,11 +593,7 @@ void InkHUD::Applet::hatchRegion(int16_t x, int16_t y, uint16_t w, uint16_t h, u
 // If time is invalid, this will be an empty string
 std::string InkHUD::Applet::getTimeString(uint32_t epochSeconds)
 {
-#ifdef BUILD_EPOCH
-    constexpr uint32_t validAfterEpoch = BUILD_EPOCH - (SEC_PER_DAY * 30 * 6); // 6 Months prior to build
-#else
-    constexpr uint32_t validAfterEpoch = 1738368000 - (SEC_PER_DAY * 30 * 6); // 6 Months prior to Feb 1, 2025 12:00:00 AM GMT
-#endif
+    const uint32_t validAfterEpoch = meshtastic_build_epoch - (SEC_PER_DAY * 30 * 6); // 6 Months prior to build
 
     uint32_t epochNow = getValidTime(RTCQuality::RTCQualityDevice, true);
 

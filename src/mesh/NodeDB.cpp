@@ -19,6 +19,7 @@
 #include "SafeFile.h"
 #include "TransmitHistory.h"
 #include "TypeConversions.h"
+#include "build_info.h"
 #include "error.h"
 #include "gps/RTC.h"
 #include "main.h"
@@ -2207,11 +2208,13 @@ void NodeDB::loadFromDisk()
 #ifdef FSCom
 #if defined(FACTORY_INSTALL) && !defined(ARCH_PORTDUINO)
     spiLock->lock();
-    if (!FSCom.exists("/prefs/" xstr(BUILD_EPOCH))) {
+    char factoryInstallMarker[32];
+    snprintf(factoryInstallMarker, sizeof(factoryInstallMarker), "/prefs/%s", meshtastic_build_epoch_str);
+    if (!FSCom.exists(factoryInstallMarker)) {
         LOG_WARN("Factory Install Reset!");
         rmDir("/prefs");
         FSCom.mkdir("/prefs");
-        File f2 = FSCom.open("/prefs/" xstr(BUILD_EPOCH), FILE_O_WRITE);
+        File f2 = FSCom.open(factoryInstallMarker, FILE_O_WRITE);
         if (f2) {
             f2.flush();
             f2.close();

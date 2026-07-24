@@ -25,9 +25,11 @@
 set -uo pipefail
 
 VERSION=$(bin/buildinfo.py long) || exit 1
+VERSION_SHORT=$(bin/buildinfo.py short) || exit 1
 
 # The shell vars the build tool expects to find
 export APP_VERSION=$VERSION
+export APP_VERSION_SHORT=$VERSION_SHORT
 
 if [[ $# -gt 0 ]]; then
 	# can override which environment by passing arg
@@ -50,7 +52,13 @@ trap 'rm -f "$LOG"' EXIT
 
 # Keep streaming to the console so the CI log reads exactly as it did before; tee a copy for the
 # post-mortem classification below.
-pio check --flags "-DAPP_VERSION=${APP_VERSION} --suppressions-list=suppressions.txt --inline-suppr" "${CHECK[@]}" --skip-packages --pattern="src/" --fail-on-defect=low --fail-on-defect=medium --fail-on-defect=high 2>&1 | tee "$LOG"
+#
+# --flags REPLACES platformio.ini's check_flags, it does not append to them (see
+# platformio/check/cli.py: `flags=flags or env_options.get("check_flags")`), so every flag cppcheck
+# needs has to be repeated here. APP_VERSION_SHORT is the stable macro src/configuration.h requires;
+# leaving it undefined trips that header's #error, which cppcheck reports as a high-severity
+# preprocessorErrorDirective and --fail-on-defect=high then fails on every board.
+pio check --flags "-DAPP_VERSION_SHORT=${APP_VERSION_SHORT} --suppressions-list=suppressions.txt --inline-suppr" "${CHECK[@]}" --skip-packages --pattern="src/" --fail-on-defect=low --fail-on-defect=medium --fail-on-defect=high 2>&1 | tee "$LOG"
 STATUS=${PIPESTATUS[0]}
 
 if [[ $STATUS -eq 0 ]]; then

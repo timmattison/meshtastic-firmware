@@ -4,7 +4,9 @@
 >
 > |                |                                                                                                                        |
 > | -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+> | Build          | `./pio.sh run -e <env>` - never bare `pio` (the wrapper isolates PlatformIO's core dir per worktree)                   |
 > | Local tests    | `./bin/run-tests.sh` (exit 0 GREEN · 1 RED · 2 AMBER · 3 FILTERED)                                                     |
+> | Tooling tests  | `./bin/run-build-tests.sh` (build scripts + `pio.sh`; exit 0 GREEN · 1 RED)                                            |
 > | Hardware tests | [meshtastic/meshtastic-mcp](https://github.com/meshtastic/meshtastic-mcp) (`MESHTASTIC_FIRMWARE_ROOT` → this checkout) |
 > | Format         | `trunk fmt`                                                                                                            |
 > | Mirror docs    | `.github/copilot-instructions.md` (canonical) · `CLAUDE.md` (Claude Code)                                              |
@@ -28,18 +30,19 @@ This file (`AGENTS.md`) is a short pointer + quick reference for agents that don
 
 ## Quick command reference
 
-| Action                           | Command                                                                                                                                                               |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Build a firmware variant         | `pio run -e <env>` (e.g. `pio run -e rak4631`, `pio run -e heltec-v3`)                                                                                                |
-| Build native macOS host binary   | `pio run -e native-macos` (Homebrew prereqs + CH341 LoRa setup in `variants/native/portduino/platformio.ini`)                                                         |
-| Clean + rebuild                  | `pio run -e <env> -t clean && pio run -e <env>`                                                                                                                       |
-| Flash a device                   | `pio run -e <env> -t upload --upload-port <port>` (or use the `pio_flash` MCP tool)                                                                                   |
-| Run firmware unit tests (native) | `./bin/run-tests.sh` (preferred - ASan/LSan + RED/AMBER/GREEN verdict); or raw: `~/.platformio/penv/bin/python -m platformio test -e native > /tmp/test_out.txt 2>&1` |
-| Run MCP hardware tests           | From a [meshtastic-mcp](https://github.com/meshtastic/meshtastic-mcp) checkout: `MESHTASTIC_FIRMWARE_ROOT=/path/to/firmware ./run-tests.sh`                           |
-| Live TUI test runner             | `uvx --from git+https://github.com/meshtastic/meshtastic-mcp meshtastic-mcp-test-tui`                                                                                 |
-| Format before commit             | `trunk fmt`                                                                                                                                                           |
-| Regenerate protobuf bindings     | `bin/regen-protos.sh`                                                                                                                                                 |
-| Generate CI matrix               | `./bin/generate_ci_matrix.py all [--level pr]`                                                                                                                        |
+| Action                           | Command                                                                                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Build a firmware variant         | `./pio.sh run -e <env>` (e.g. `./pio.sh run -e rak4631`, `./pio.sh run -e heltec-v3`) - never bare `pio`, see **House rules**               |
+| Build native macOS host binary   | `./pio.sh run -e native-macos` (Homebrew prereqs + CH341 LoRa setup in `variants/native/portduino/platformio.ini`)                          |
+| Clean + rebuild                  | `./pio.sh run -e <env> -t clean && ./pio.sh run -e <env>`                                                                                   |
+| Flash a device                   | `./pio.sh run -e <env> -t upload --upload-port <port>` (or use the `pio_flash` MCP tool)                                                    |
+| Run firmware unit tests (native) | `./bin/run-tests.sh` (preferred - ASan/LSan + RED/AMBER/GREEN verdict); or raw: `./pio.sh test -e native > /tmp/test_out.txt 2>&1`          |
+| Run build-tooling tests          | `./bin/run-build-tests.sh` (discovers `bin/test_*.py` + `*.test.sh`; exit 0 GREEN · 1 RED)                                                  |
+| Run MCP hardware tests           | From a [meshtastic-mcp](https://github.com/meshtastic/meshtastic-mcp) checkout: `MESHTASTIC_FIRMWARE_ROOT=/path/to/firmware ./run-tests.sh` |
+| Live TUI test runner             | `uvx --from git+https://github.com/meshtastic/meshtastic-mcp meshtastic-mcp-test-tui`                                                       |
+| Format before commit             | `trunk fmt`                                                                                                                                 |
+| Regenerate protobuf bindings     | `bin/regen-protos.sh`                                                                                                                       |
+| Generate CI matrix               | `./bin/generate_ci_matrix.py all [--level pr]`                                                                                              |
 
 ## MCP server (device + test automation)
 
@@ -73,6 +76,8 @@ Key rotation to never trigger casually: only the **full** factory reset (`factor
 
 ## House rules
 
+- **Run PlatformIO through `./pio.sh`, never bare `pio`.** The wrapper forwards every argument to `pio` after pointing `PLATFORMIO_CORE_DIR` at `<worktree>/.platformio`, giving each worktree its own toolchains and package cache. Worktrees pin different ESP32 platforms (`espressif32` vs. `pioarduino`) and both install a package named `framework-arduinoespressif32` into the shared `~/.platformio` cache at incompatible versions - whichever built last wins, and the next build against the other platform dies with `TypeError: expected str, bytes or os.PathLike object, not NoneType`. Details in **PlatformIO wrapper** in `.github/copilot-instructions.md`.
+- **Never edit or commit `src/build_info.cpp`.** It is generated on every build by `bin/platformio-pre.py` (via `bin/build_info_gen.py`) and gitignored: it is the single translation unit carrying the volatile build identity (git SHA + build epoch), so a commit or the daily epoch rollover recompiles one object instead of all of `src/`. Read the values through the stable `extern`s in `src/build_info.h`; never reintroduce `-DAPP_VERSION=` / `-DBUILD_EPOCH=` compile flags.
 - **No destructive device operations without operator approval.** `factory_reset`, `erase_and_flash`, `reboot`, `shutdown`, history-rewriting git ops - describe the action and stop. Operator authorizes.
 - **One MCP call per serial port at a time.** The port lock is exclusive; concurrent calls deadlock. Sequence: open → read/mutate → close, then next device.
 - **`userPrefs.jsonc` is session state during tests.** The `_session_userprefs` fixture snapshots + restores it; never edit it from inside a test.
@@ -101,7 +106,7 @@ Sequence these; don't parallelize on the same port.
 
 ### Testing a firmware change
 
-1. Build locally: `pio run -e <env>`
+1. Build locally: `./pio.sh run -e <env>`
 2. Flash the test device: `pio_flash(env=..., port=..., confirm=True)`
 3. Run the suite from a meshtastic-mcp checkout: `MESHTASTIC_FIRMWARE_ROOT=/path/to/firmware ./run-tests.sh tests/<tier>` (or the `/test` skill)
 4. On failure, open the run's `tests/report.html` → `Meshtastic debug` section for the firmware log tail + device state dump
@@ -122,7 +127,8 @@ Sequence these; don't parallelize on the same port.
 | `src/modules/`                                                 | Feature modules; `Telemetry/Sensor/` has 50+ I2C sensor drivers                                                                                                                                |
 | `variants/`                                                    | 200+ hardware variant definitions (`variant.h` + `platformio.ini` per board)                                                                                                                   |
 | `protobufs/`                                                   | `.proto` definitions; regenerate with `bin/regen-protos.sh`                                                                                                                                    |
-| `test/`                                                        | Firmware unit tests (19 suites; `./bin/run-tests.sh` preferred, falls back to `pio test -e native`)                                                                                            |
+| `test/`                                                        | Firmware unit tests (19 suites; `./bin/run-tests.sh` preferred, raw alternative `./pio.sh test -e native`)                                                                                     |
+| `pio.sh`                                                       | PlatformIO wrapper - per-worktree `PLATFORMIO_CORE_DIR`; run every `pio` command through it (`pio.test.sh` covers it, `./bin/run-build-tests.sh` runs that)                                    |
 | [meshtastic-mcp](https://github.com/meshtastic/meshtastic-mcp) | Standalone MCP server + tiered pytest hardware harness (`unit/`, `mesh/`, `telemetry/`, `monitor/`, `recovery/`, `ui/`, `fleet/`, `admin/`, `provisioning/`) - registered here via `.mcp.json` |
 | `.github/prompts/`                                             | Copilot prompt bodies (firmware scaffolding: new module / sensor / variant)                                                                                                                    |
 | `.github/copilot-instructions.md`                              | **Primary agent instructions - read this**                                                                                                                                                     |

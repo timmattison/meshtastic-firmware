@@ -6,10 +6,10 @@ from os.path import join
 import subprocess
 import json
 import re
-from datetime import datetime
 from typing import Dict
 
 from readprops import readProps
+from build_info_gen import assemble_global_flags, compute_build_epoch
 
 Import("env")
 platform = env.PioPlatform()
@@ -314,18 +314,21 @@ for pref in userPrefs:
     else:
         pref_flags.append("-D" + pref + "=" + env.StringifyMacro(userPrefs[pref]) + "")
 
-# General options that are passed to the C and C++ compilers
-# Calculate unix epoch for current day (midnight)
-current_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-build_epoch = int(current_date.timestamp())
+# Unix epoch for the current day (midnight, local time), for the build manifest below.
+#
+# The same value is baked into the generated translation unit, which bin/platformio-pre.py
+# writes - it has to run there, because this script is registered WITHOUT a prefix and an
+# unprefixed extra_script is a POST script, i.e. it runs after PlatformIO has already
+# globbed src/ and fixed the source list. Both callers go through compute_build_epoch(),
+# which memoizes per process, so the manifest and the generated TU can never disagree.
+build_epoch = compute_build_epoch()
 
-flags = [
-        "-DAPP_VERSION=" + verObj["long"],
-        "-DAPP_VERSION_SHORT=" + verObj["short"],
-        "-DAPP_ENV=" + env.get("PIOENV"),
-        "-DAPP_REPO=" + repo_owner,
-        "-DBUILD_EPOCH=" + str(build_epoch),
-    ] + pref_flags
+# Only the STABLE app-identity macros (short version, env, repo) plus the user-pref
+# flags go on the global compile line. The volatile APP_VERSION (git SHA) and
+# BUILD_EPOCH values now live solely in the generated src/build_info.cpp TU, so they
+# are intentionally NOT injected here - keeping them off the global flags is the whole
+# point of issue #8 (a new SHA or the daily epoch no longer dirties every src/ object).
+flags = assemble_global_flags(verObj["short"], env.get("PIOENV"), repo_owner, pref_flags)
 
 print("Using flags:")
 for flag in flags:
@@ -335,6 +338,11 @@ projenv.Append(
     CCFLAGS=flags,
 )
 
+# The one remaining SHA-keyed injection: define APP_VERSION only for the
+# meshtastic-device-ui library. This is deliberate - that lib is far smaller than all
+# of src/, and issue #8's acceptance criteria permit it to still recompile on a SHA
+# change. Keep the scoped tuple form ("APP_VERSION", ...) below rather than a global
+# -D define so this stays confined to just this lib and never leaks onto the global flags.
 for lb in env.GetLibBuilders():
     if lb.name == "meshtastic-device-ui":
         lb.env.Append(CPPDEFINES=[("APP_VERSION", verObj["long"])])

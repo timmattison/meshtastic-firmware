@@ -24,6 +24,7 @@
 #include "Power.h"
 #include "SPILock.h"
 #include "Throttle.h"
+#include "build_info.h"
 #include "concurrency/OSThread.h"
 #include "concurrency/Periodic.h"
 #include "detect/ScanI2C.h"
@@ -351,7 +352,7 @@ void waitUntilPowerLevelSafe()
  */
 void printInfo()
 {
-    LOG_INFO("S:B:%d,%s,%s,%s", HW_VENDOR, optstr(APP_VERSION), optstr(APP_ENV), optstr(APP_REPO));
+    LOG_INFO("S:B:%d,%s,%s,%s", HW_VENDOR, meshtastic_build_version, optstr(APP_ENV), optstr(APP_REPO));
 }
 #ifndef PIO_UNIT_TESTING
 void setup()
@@ -462,7 +463,7 @@ void setup()
     // until the operator authenticates, so skip the banner entirely there.
 #if defined(DEBUG_MUTE) && defined(DEBUG_PORT) && !defined(MESHTASTIC_LOCKDOWN)
     DEBUG_PORT.printf("\r\n\r\n//\\ E S H T /\\ S T / C\r\n");
-    DEBUG_PORT.printf("Version %s for %s from %s\r\n", optstr(APP_VERSION), optstr(APP_ENV), optstr(APP_REPO));
+    DEBUG_PORT.printf("Version %s for %s from %s\r\n", meshtastic_build_version, optstr(APP_ENV), optstr(APP_REPO));
     DEBUG_PORT.printf("Debug mute is enabled, there will be no serial output.\r\n");
 #endif
 
@@ -801,9 +802,7 @@ void setup()
 
     // Hello
     printInfo();
-#ifdef BUILD_EPOCH
-    LOG_INFO("Build timestamp: %ld", BUILD_EPOCH);
-#endif
+    LOG_INFO("Build timestamp: %ld", (long)meshtastic_build_epoch);
 
 #ifdef ARCH_ESP32
     esp32Setup();
@@ -1240,7 +1239,7 @@ bool runASAP;
 extern meshtastic_DeviceMetadata getDeviceMetadata()
 {
     meshtastic_DeviceMetadata deviceMetadata = meshtastic_DeviceMetadata_init_default;
-    strncpy(deviceMetadata.firmware_version, optstr(APP_VERSION), sizeof(deviceMetadata.firmware_version));
+    strncpy(deviceMetadata.firmware_version, meshtastic_build_version, sizeof(deviceMetadata.firmware_version));
     deviceMetadata.device_state_version = DEVICESTATE_CUR_VER;
     deviceMetadata.canShutdown = pmu_found || HAS_CPU_SHUTDOWN;
     deviceMetadata.hasBluetooth = HAS_BLUETOOTH;

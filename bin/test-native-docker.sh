@@ -28,8 +28,9 @@ if $REBUILD || ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     docker build -t "$IMAGE_NAME" -f "$ROOT_DIR/Dockerfile.test" "$ROOT_DIR"
 fi
 
-# Disable BUILD_EPOCH to avoid full rebuilds between test runs (matches CI)
-sed_cmd='s/-DBUILD_EPOCH=$UNIX_TIME/#-DBUILD_EPOCH=$UNIX_TIME/'
+# No BUILD_EPOCH workaround is needed: issue #8 moved the build epoch (and the git SHA) out of the
+# global src/ compile flags and into the generated src/build_info.cpp, so a changing epoch no longer
+# invalidates every object file between test runs.
 
 # Default: run all tests. Pass extra args (e.g. -f test_transmit_history) through.
 if [[ ${#EXTRA_ARGS[@]} -eq 0 ]]; then
@@ -41,4 +42,4 @@ fi
 exec docker run --rm \
     -v "$ROOT_DIR:/src:ro" \
     "$IMAGE_NAME" \
-    bash -c "rm -rf /tmp/fw-test && cp -a /src /tmp/fw-test && cd /tmp/fw-test && sed -i '${sed_cmd}' platformio.ini && ${CMD[*]}"
+    bash -c "rm -rf /tmp/fw-test && cp -a /src /tmp/fw-test && cd /tmp/fw-test && ${CMD[*]}"

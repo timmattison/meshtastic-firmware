@@ -146,10 +146,9 @@ jobs:
         run: echo "long=$(./bin/buildinfo.py long)" >> $GITHUB_OUTPUT
         id: version
 
-      # Disable (comment-out) BUILD_EPOCH. It causes a full rebuild between tests and resets the
-      # coverage information each time.
-      - name: Disable BUILD_EPOCH
-        run: sed -i 's/-DBUILD_EPOCH=$UNIX_TIME/#-DBUILD_EPOCH=$UNIX_TIME/' platformio.ini
+      # No BUILD_EPOCH workaround is needed here: issue #8 moved the build epoch (and the git SHA)
+      # out of the global src/ compile flags and into the generated src/build_info.cpp, so a
+      # changing epoch no longer invalidates every object file between test runs.
 
       - name: Build test programs once
         # One shared build of src + every test program. This is the single source build; gcov then
