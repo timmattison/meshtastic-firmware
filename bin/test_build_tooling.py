@@ -1076,6 +1076,144 @@ def test_main_matrix_workflow_runs_the_build_test_runner():
     )
 
 
+# --- The agent-facing docs must document the tooling they tell you to run ----------
+# CLAUDE.md names .github/copilot-instructions.md as the canonical agent-facing
+# document and AGENTS.md as its mirror, so an agent may arrive through any of the
+# three and all three have to agree. Tooling documented in only one of them is
+# tooling the other two contradict: CLAUDE.md gained the "always run pio through
+# ./pio.sh" rule (per-worktree PLATFORMIO_CORE_DIR) while the canonical doc still
+# told the reader to run bare `pio run -e <env>` - exactly what CLAUDE.md forbids.
+AGENT_FACING_DOCS = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
+
+# The two entry points an agent is told to invoke by hand. Both are matched by
+# basename on purpose: a doc may write the runner as `bin/run-build-tests.sh`,
+# `./bin/run-build-tests.sh`, or inside a fenced block, and the guard must not care
+# which. Derived from the real paths so a rename cannot leave the guard demanding a
+# mention of a script that no longer exists.
+PIO_WRAPPER = os.path.join(REPO_ROOT, "pio.sh")
+PIO_WRAPPER_NAME = os.path.basename(PIO_WRAPPER)
+BUILD_TEST_RUNNER_NAME = os.path.basename(BUILD_TEST_RUNNER)
+
+
+def docs_missing_mention(needle, root=REPO_ROOT):
+    """Return the agent-facing docs under ``root`` that never mention ``needle``.
+
+    Deliberately a plain substring test over the whole file. The guard's job is to
+    catch a doc that has drifted into silence about a tool, not to police how that
+    tool is described: asserting a particular sentence, table row or command form
+    would go red on ordinary prose edits, and a guard that cries wolf gets deleted -
+    which is strictly worse than no guard at all.
+
+    A doc that does not exist counts as missing the mention. A deleted mirror is
+    drift too, and reporting it beats raising an OSError at the caller.
+
+    ``root`` is injectable so the scan can be pointed at a throwaway tree and proven
+    capable of going red (a guard that cannot fail is worthless).
+
+    Args:
+        needle: Substring to look for, e.g. a script's basename.
+        root: Directory to treat as the repository root. Defaults to this checkout.
+
+    Returns:
+        A ``list[str]`` of repo-relative doc paths that do not mention ``needle``, in
+        :data:`AGENT_FACING_DOCS` order; empty when every doc mentions it.
+    """
+    missing = []
+    for doc in AGENT_FACING_DOCS:
+        path = pathlib.Path(root) / doc
+        if not path.is_file() or needle not in path.read_text(errors="replace"):
+            missing.append(doc)
+    return missing
+
+
+def test_pio_wrapper_exists_and_is_executable():
+    """The wrapper the docs send agents to must be a real, runnable script."""
+    assert os.path.isfile(PIO_WRAPPER), f"{PIO_WRAPPER} does not exist"
+    assert os.access(PIO_WRAPPER, os.X_OK), f"{PIO_WRAPPER} is not executable"
+
+
+def test_agent_docs_document_the_pio_wrapper():
+    """Every agent-facing doc must document the pio.sh wrapper.
+
+    pio.sh pins PLATFORMIO_CORE_DIR to the current worktree so worktrees that pin
+    different ESP32 platforms stop overwriting each other's shared
+    framework-arduinoespressif32 package. A doc that still teaches bare `pio` is
+    handing the reader that breakage - and contradicting CLAUDE.md, which forbids it.
+    """
+    missing = docs_missing_mention(PIO_WRAPPER_NAME)
+    assert not missing, (
+        f"these agent-facing docs never mention {PIO_WRAPPER_NAME}: {missing} - "
+        "they still teach bare `pio`, which CLAUDE.md forbids"
+    )
+
+
+def test_agent_docs_document_the_build_test_runner():
+    """Every agent-facing doc must document the build-tooling test runner.
+
+    bin/run-tests.sh runs the firmware suites; bin/run-build-tests.sh runs the
+    build-tooling tests, which live outside test/ and were orphaned for exactly as
+    long as no document named them.
+    """
+    missing = docs_missing_mention(BUILD_TEST_RUNNER_NAME)
+    assert not missing, (
+        f"these agent-facing docs never mention {BUILD_TEST_RUNNER_NAME}: {missing} - "
+        "the build-tooling tests are undiscoverable from the docs an agent reads"
+    )
+
+
+def _scratch_docs_root():
+    """A throwaway repo root for driving docs_missing_mention().
+
+    mkdtemp() already yields a unique directory per call; the pid and nanosecond
+    stamp in the prefix make concurrent runs obvious in a listing as well. Returns
+    the tmp root; the caller removes it.
+    """
+    return tempfile.mkdtemp(prefix=f"agent-docs-{os.getpid()}-{time.time_ns()}-")
+
+
+# Any tool name works for the mutation checks; reuse the real wrapper's so the
+# fixtures read like the documents they stand in for.
+DOC_MUTATION_NEEDLE = PIO_WRAPPER_NAME
+
+
+def test_doc_mention_scan_flags_a_doc_that_omits_the_tool():
+    """Mutation check: the scan must go red for a doc that has drifted silent.
+
+    Plant all three docs in a throwaway root with one of them saying nothing about
+    the tool, require exactly that one to be reported, then give it the mention and
+    require the report to empty out.
+    """
+    root = _scratch_docs_root()
+    try:
+        silent = AGENT_FACING_DOCS[-1]
+        for doc in AGENT_FACING_DOCS:
+            mentions = f"build it with ./{DOC_MUTATION_NEEDLE} run -e tbeam\n"
+            _plant(root, doc, "prose with no tooling in it\n" if doc == silent else mentions)
+        assert docs_missing_mention(DOC_MUTATION_NEEDLE, root=root) == [silent], (
+            "the scan did not flag the one doc that omits the tool"
+        )
+        _plant(root, silent, f"see ./{DOC_MUTATION_NEEDLE} for the wrapper\n")
+        assert docs_missing_mention(DOC_MUTATION_NEEDLE, root=root) == [], (
+            "the scan still flags a doc that does mention the tool"
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_doc_mention_scan_flags_a_doc_that_does_not_exist():
+    """A mirror doc that vanished is drift: report it, don't raise on it."""
+    root = _scratch_docs_root()
+    try:
+        present = AGENT_FACING_DOCS[0]
+        _plant(root, present, f"./{DOC_MUTATION_NEEDLE}\n")
+        missing = docs_missing_mention(DOC_MUTATION_NEEDLE, root=root)
+        assert missing == [doc for doc in AGENT_FACING_DOCS if doc != present], (
+            f"absent docs were not reported as missing the mention: {missing}"
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     passed = 0
