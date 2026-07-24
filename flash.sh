@@ -58,8 +58,13 @@ fh_is_mui_env() {
 # tftSetup() is compiled only under `#if HAS_TFT` (src/graphics/tftSetup.cpp,
 # called from src/main.cpp), so its presence in the linked ELF proves the
 # binary was built with HAS_TFT=1 and can actually show the MUI.
+#
+# Deliberately NOT `grep -q`: the caller runs `nm <elf> | fh_symbols_...`
+# under `set -o pipefail`, and -q would exit on first match, SIGPIPE nm, and
+# make pipefail report the pipeline as failed. Plain grep drains all input, so
+# nm exits cleanly and the pipeline status reflects only the match result.
 fh_symbols_have_tftsetup() {
-  grep -q 'tftSetup'
+  grep 'tftSetup' >/dev/null 2>&1
 }
 
 # fh_find_nm -> path to an nm that can read the build ELF. Prefer this
@@ -87,7 +92,8 @@ fh_find_nm() {
 # guard: it refuses to flash a binary that looks like an MUI build but isn't.
 fh_assert_mui_binary() {
   local env="$1" elf nm
-  elf="$(find ".pio/build/${env}" -maxdepth 1 -name '*.elf' 2>/dev/null | head -1)"
+  # `|| true` neutralises the SIGPIPE find gets from head under pipefail.
+  elf="$(find ".pio/build/${env}" -maxdepth 1 -name '*.elf' 2>/dev/null | head -1 || true)"
   if [ -z "${elf}" ]; then
     echo "flash.sh: could not find a built ELF for '${env}' to verify HAS_TFT." >&2
     return 1
