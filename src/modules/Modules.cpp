@@ -19,6 +19,8 @@
 #if !MESHTASTIC_EXCLUDE_CANNEDMESSAGES
 #include "modules/CannedMessageModule.h"
 #endif
+// Self-guarding: only defines MESHTASTIC_HAS_VOICEMEMO on the classic T-Deck build.
+#include "modules/VoiceMemoModule.h"
 #if HAS_SCREEN && BASEUI_HAS_GAMES
 #include "modules/games/GamesModule.h"
 #endif
@@ -207,6 +209,11 @@ void setupModules()
 #if HAS_SCREEN && !MESHTASTIC_EXCLUDE_CANNEDMESSAGES
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
         cannedMessageModule = new CannedMessageModule();
+    }
+#endif
+#ifdef MESHTASTIC_HAS_VOICEMEMO
+    if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
+        voiceMemoModule = new VoiceMemoModule();
     }
 #endif
 #if HAS_SCREEN && BASEUI_HAS_GAMES
