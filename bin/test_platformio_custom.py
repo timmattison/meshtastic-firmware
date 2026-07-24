@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -647,6 +648,199 @@ def test_no_extra_script_computes_the_build_epoch_inline():
         f"build_info.{BUILD_EPOCH_HELPER}(): {offenders}. A second copy of the "
         "computation can drift from the generated TU's value."
     )
+
+
+# --- No build-epoch "presence marker" macro may exist ------------------------------
+# src/build_info.h briefly defined MESHTASTIC_HAS_BUILD_EPOCH as 1, and the call sites
+# that used to say `#ifdef BUILD_EPOCH` were mechanically converted to
+# `#if MESHTASTIC_HAS_BUILD_EPOCH` with their old `#else` fallback left in place. Both
+# halves of that are wrong now that the epoch is an extern symbol in the generated TU:
+#
+#   * The marker is unconditionally 1 for anyone who includes the header, so every
+#     `#else` branch behind it is unreachable dead code.
+#   * The `#if` spelling fails silently in the worst possible direction. A translation
+#     unit that uses the epoch but forgets to `#include "build_info.h"` sees the marker
+#     undefined, `#if` evaluates the undefined identifier as 0, and the compiler quietly
+#     selects the stale fallback - InkHUD's Applet.cpp fell back to a hardcoded
+#     1738368000 (Feb 1 2025) - instead of erroring. The guard's only real effect was to
+#     mask a missing include.
+#
+# Reading the extern symbols unguarded turns that same mistake back into a loud compile
+# error on an undeclared identifier, which is the behaviour we want. So the marker must
+# not exist anywhere in the C/C++ sources, in any spelling.
+PRESENCE_MARKER_MACRO = "MESHTASTIC_HAS_BUILD_EPOCH"
+# Every C/C++ surface the marker could hide in. variants/ is included alongside src/
+# even though the marker only ever lived in src/: board variants are compiled into the
+# same translation units, so a re-introduction there would be just as broken and just
+# as invisible.
+SOURCE_SCAN_GLOBS = (
+    "src/**/*.c",
+    "src/**/*.cpp",
+    "src/**/*.h",
+    "src/**/*.hpp",
+    "src/**/*.ino",
+    "variants/**/*.c",
+    "variants/**/*.cpp",
+    "variants/**/*.h",
+    "variants/**/*.hpp",
+)
+BUILD_INFO_HEADER_RELPATH = "src/build_info.h"
+# The stable symbols the header must keep declaring. Asserted alongside the marker's
+# absence so that deleting or gutting build_info.h can never read as a passing fix.
+BUILD_INFO_EXTERNS = (
+    "meshtastic_build_version",
+    "meshtastic_build_epoch_str",
+    "meshtastic_build_epoch",
+)
+
+
+def scan_sources_for_presence_marker(root=REPO_ROOT):
+    """Find every mention of the build-epoch presence marker in the C/C++ sources.
+
+    Deliberately a plain substring scan with no comment stripping, unlike
+    :func:`scan_build_surfaces_for_volatile_macros`. That scan tolerates commented-out
+    text because a disabled compile flag is genuinely harmless. Here the macro is being
+    abolished outright, so a commented-out `#if` or a doc comment still describing a
+    marker that no longer exists is also a defect: it invites the guard back.
+
+    ``root`` is injectable so the guard can be pointed at a throwaway tree and proven
+    capable of going red (a guard that cannot fail is worthless).
+
+    Args:
+        root: Directory to treat as the repository root. Defaults to this checkout.
+
+    Returns:
+        A sorted ``list[(relpath, lineno, stripped_line)]`` of hits; empty when the
+        marker is gone from every source file.
+    """
+    root_path = pathlib.Path(root)
+    hits = []
+    seen = set()
+    for glob in SOURCE_SCAN_GLOBS:
+        for path in sorted(root_path.glob(glob)):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root_path).as_posix()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            with open(path, errors="replace") as f:
+                for lineno, raw in enumerate(f, 1):
+                    if PRESENCE_MARKER_MACRO in raw:
+                        hits.append((rel, lineno, raw.strip()))
+    return sorted(hits)
+
+
+def test_no_source_branches_on_the_build_epoch_presence_marker():
+    """Guard (issue #8): no source may mention MESHTASTIC_HAS_BUILD_EPOCH.
+
+    See the block comment above for why the marker is not merely redundant but actively
+    harmful: it converts "you forgot the include" from a compile error into a silently
+    wrong fallback value.
+    """
+    hits = scan_sources_for_presence_marker()
+    detail = "\n".join(f"  {rel}:{line}: {text}" for rel, line, text in hits)
+    assert not hits, (
+        f"{PRESENCE_MARKER_MACRO} is still present. It is unconditionally 1 wherever "
+        f"{BUILD_INFO_HEADER_RELPATH} is included, so every #else fallback behind it is "
+        "unreachable, and any TU that forgets the include silently compiles the stale "
+        "fallback instead of failing to build. Delete the guard scaffolding and read "
+        f"the extern symbols directly:\n{detail}"
+    )
+
+
+def test_build_info_header_keeps_the_externs_and_defines_no_presence_marker():
+    """The header must still declare the stable symbols, and define no marker.
+
+    Two assertions in one test on purpose: "the marker is gone" is only the right
+    outcome if the extern declarations that replace it are still there. Checked
+    separately from the repo-wide scan so a re-introduced ``#define`` names the header
+    directly instead of arriving as one line among many.
+    """
+    with open(os.path.join(REPO_ROOT, BUILD_INFO_HEADER_RELPATH)) as f:
+        header = f.read()
+    for symbol in BUILD_INFO_EXTERNS:
+        assert symbol in header, (
+            f"{BUILD_INFO_HEADER_RELPATH} no longer declares {symbol}: the call sites "
+            "that read it unguarded would all fail to compile"
+        )
+    assert not re.search(r"#\s*define\s+" + PRESENCE_MARKER_MACRO, header), (
+        f"{BUILD_INFO_HEADER_RELPATH} defines {PRESENCE_MARKER_MACRO}. The epoch symbol "
+        "is always available to anyone who includes this header, so a presence marker "
+        "can only ever be 1 here and 0 (silently, wrongly) in a TU that forgot the "
+        "include"
+    )
+
+
+def _scratch_presence_marker_root():
+    """A throwaway repo root for driving scan_sources_for_presence_marker().
+
+    mkdtemp() already guarantees a unique directory per call; the pid and nanosecond
+    stamp in the prefix are belt-and-braces, and make it obvious from a stray leftover
+    directory which process and run created it. Either way, concurrent copies of these
+    tests never share a scratch tree (same parallel-safety reasoning as
+    _scratch_runner_root). Returns the tmp root; the caller removes it.
+    """
+    return tempfile.mkdtemp(prefix=f"presence-marker-{os.getpid()}-{time.time_ns()}-")
+
+
+# One planted violation per spelling the preprocessor accepts, so the scan is proven to
+# catch a re-introduction however it is written - not just the `#if` form used before.
+PLANTED_MARKER_USES = {
+    "src/planted/if_guard.cpp": (
+        f"#if {PRESENCE_MARKER_MACRO}\n    useEpoch();\n#else\n    stale();\n#endif\n"
+    ),
+    "src/planted/ifdef_guard.h": f"#ifdef {PRESENCE_MARKER_MACRO}\nint guarded;\n#endif\n",
+    "src/planted/defined_guard.hpp": f"#if defined({PRESENCE_MARKER_MACRO})\n#endif\n",
+    "src/planted/negated_guard.c": f"#if !{PRESENCE_MARKER_MACRO}\nint fallback;\n#endif\n",
+    "src/planted/ifndef_guard.cpp": f"#ifndef {PRESENCE_MARKER_MACRO}\n#endif\n",
+    "src/planted/definition.h": f"#define {PRESENCE_MARKER_MACRO} 1\n",
+    "src/planted/prose.ino": f"// fall back when {PRESENCE_MARKER_MACRO} is undefined\n",
+    "variants/planted/variant.h": f"#if {PRESENCE_MARKER_MACRO}\n#endif\n",
+}
+
+
+def test_presence_marker_scan_flags_every_planted_spelling():
+    """Mutation check: the guard must actually go red on a re-introduction.
+
+    Plants the marker once per preprocessor spelling (and once under variants/) in a
+    throwaway root and requires every one of them to be reported.
+    """
+    root = _scratch_presence_marker_root()
+    try:
+        for relpath, text in PLANTED_MARKER_USES.items():
+            _plant(root, relpath, text)
+        flagged = {rel for rel, _, _ in scan_sources_for_presence_marker(root)}
+        missed = sorted(set(PLANTED_MARKER_USES) - flagged)
+        assert not missed, f"the scan did not reach these planted violations: {missed}"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+# The end state this change produces: the extern symbols read unguarded. None of it may
+# be flagged, or the guard would forbid the very thing it is pushing people towards.
+LEGITIMATE_EPOCH_USES = {
+    "src/planted/consumer.cpp": (
+        '#include "build_info.h"\n'
+        "if (tv.tv_sec < meshtastic_build_epoch) {\n"
+        "    return RTCSetResultInvalidTime;\n"
+        "}\n"
+        'LOG_INFO("%s built at %s", meshtastic_build_version, meshtastic_build_epoch_str);\n'
+    ),
+    "src/planted/neighbour.h": "#define MESHTASTIC_HAS_A_DIFFERENT_THING 1\n",
+}
+
+
+def test_presence_marker_scan_ignores_unguarded_extern_use():
+    """The guard must not flag the unguarded extern reads it exists to encourage."""
+    root = _scratch_presence_marker_root()
+    try:
+        for relpath, text in LEGITIMATE_EPOCH_USES.items():
+            _plant(root, relpath, text)
+        hits = scan_sources_for_presence_marker(root)
+        assert not hits, f"the scan flagged legitimate unguarded epoch use: {hits}"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _require_runner():
