@@ -24,6 +24,11 @@
 #      destructive erase, never after -- discovering a typo only once the
 #      device has been wiped is the failure mode worth designing out.
 #
+#   4. The guard must inspect the ELF that was just BUILT. A build directory
+#      accumulates one ELF per version hash, so verifying an arbitrary one
+#      lets a stale binary vouch for the fresh one -- a false PASS, which is
+#      the dangerous direction for a safety guard.
+#
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -170,7 +175,64 @@ if [ -n "$(line_of "${rec1}" 'MT=--set')" ]; then
   note_fail "flash.sh set a region even though --region was not passed"
 fi
 
+# --- 4. The guard must verify the freshly built ELF ----------------------
+# PlatformIO names each ELF after the git hash it was built from, so
+# .pio/build/<env>/ accumulates one per build and the newest is the one
+# about to be flashed. Verifying any other ELF means a stale binary vouches
+# for the fresh one: the guard prints "HAS_TFT is enabled" about a file
+# nobody is flashing. That is a false PASS, and a guard that passes when it
+# should fail is worse than no guard.
+#
+# Readdir order is arbitrary (APFS orders by name hash, not creation), so
+# checking one layout could pass by luck. Both cases below use the SAME two
+# filenames and only swap which one is newer -- the filesystem reports that
+# name set in the same order either way, so any "take the first entry"
+# implementation is necessarily wrong in exactly one of them, on any
+# filesystem. Only genuinely selecting by mtime passes both.
+
+nm_rec="${stub_dir}/nm_targets.log"
+fake_root="${stub_dir}/fakeroot"
+mkdir -p "${fake_root}/.platformio/packages/toolchain-stub/bin"
+# Stands in for the cross-toolchain nm: records which ELF it was handed and
+# always reports tftSetup, so the assertion is purely about WHICH file the
+# guard chose to inspect.
+cat >"${fake_root}/.platformio/packages/toolchain-stub/bin/stub-nm" <<'STUB'
+#!/usr/bin/env bash
+echo "$1" >>"${FLASH_TEST_NM_REC}"
+echo '420c9138 T _Z8tftSetupv'
+STUB
+chmod +x "${fake_root}/.platformio/packages/toolchain-stub/bin/stub-nm"
+
+# elf_checked_by_guard <newer-basename> -- lay out a build dir holding both
+# ELF names with <newer-basename> as the more recently modified one, run the
+# real guard against it, and echo the basename of the ELF it inspected.
+# Overriding FLASH_SH_DIR redirects fh_find_nm onto the stub toolchain, and
+# the subshell cd's because the guard resolves .pio/build/<env> from cwd.
+elf_checked_by_guard() {
+  local newer="$1" older root
+  if [ "${newer}" = "alpha.elf" ]; then older="omega.elf"; else older="alpha.elf"; fi
+  root="$(mktemp -d "${TMPDIR:-/tmp}/flash-sh-elfpick.XXXXXXXX")"
+  mkdir -p "${root}/.pio/build/t-deck-tft"
+  touch -t 202601010000 "${root}/.pio/build/t-deck-tft/${older}"
+  touch -t 202601010100 "${root}/.pio/build/t-deck-tft/${newer}"
+  : >"${nm_rec}"
+  (
+    cd "${root}" || exit 1
+    FLASH_SH_DIR="${fake_root}"
+    export FLASH_TEST_NM_REC="${nm_rec}"
+    fh_assert_mui_binary t-deck-tft
+  ) >/dev/null 2>&1 || true
+  rm -rf "${root}"
+  head -1 "${nm_rec}" 2>/dev/null | sed 's|.*/||'
+}
+
+for newer_elf in alpha.elf omega.elf; do
+  checked="$(elf_checked_by_guard "${newer_elf}")"
+  [ "${checked}" = "${newer_elf}" ] || note_fail \
+    "HAS_TFT guard inspected '${checked:-<nothing>}' but the freshly built ELF is '${newer_elf}' -- a stale ELF vouched for the fresh one"
+done
+
 if [ "${fail}" -eq 0 ]; then
-  echo "PASS: flash.sh erases before upload, enforces the HAS_TFT guard, and sets --region safely"
+  echo "PASS: flash.sh erases before upload, enforces the HAS_TFT guard on the freshly built ELF, and sets --region safely"
 fi
 exit "${fail}"
