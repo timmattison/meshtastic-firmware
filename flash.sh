@@ -170,14 +170,37 @@ fh_find_nm() {
   return 1
 }
 
+# fh_newest_elf <dir> -> path of the most recently modified *.elf in <dir>.
+# PlatformIO stamps every ELF with the git hash it was built from, so a build
+# directory accumulates one per build and only the newest is the binary about
+# to be flashed.
+#
+# Deliberately NOT `find ... | head -1`: that hands back whatever readdir
+# reports first, which is arbitrary (APFS orders directory entries by name
+# hash, not by creation time). Picking a stale ELF would make the HAS_TFT
+# guard vouch for a binary nobody is flashing -- a false PASS, and a guard
+# that passes when it should fail is worse than no guard at all. Globbing
+# also drops the pipeline entirely, so there is no head/SIGPIPE interaction
+# with `set -o pipefail` left to reason about.
+# Returns non-zero if the directory contains no ELF.
+fh_newest_elf() {
+  local dir="$1" candidate newest=""
+  for candidate in "${dir}"/*.elf; do
+    [ -f "${candidate}" ] || continue # unmatched glob stays literal
+    if [ -z "${newest}" ] || [ "${candidate}" -nt "${newest}" ]; then
+      newest="${candidate}"
+    fi
+  done
+  [ -n "${newest}" ] || return 1
+  printf '%s\n' "${newest}"
+}
+
 # fh_assert_mui_binary <env> -> 0 if the built ELF contains tftSetup; aborts
 # (non-zero) if it is a *-tft env whose binary lacks it. This is the enforced
 # guard: it refuses to flash a binary that looks like an MUI build but isn't.
 fh_assert_mui_binary() {
   local env="$1" elf nm
-  # `|| true` neutralises the SIGPIPE find gets from head under pipefail.
-  elf="$(find ".pio/build/${env}" -maxdepth 1 -name '*.elf' 2>/dev/null | head -1 || true)"
-  if [ -z "${elf}" ]; then
+  if ! elf="$(fh_newest_elf ".pio/build/${env}")"; then
     echo "flash.sh: could not find a built ELF for '${env}' to verify HAS_TFT." >&2
     return 1
   fi

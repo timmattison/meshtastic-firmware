@@ -210,7 +210,11 @@ chmod +x "${fake_root}/.platformio/packages/toolchain-stub/bin/stub-nm"
 # the subshell cd's because the guard resolves .pio/build/<env> from cwd.
 elf_checked_by_guard() {
   local newer="$1" older root
-  if [ "${newer}" = "alpha.elf" ]; then older="omega.elf"; else older="alpha.elf"; fi
+  if [ "${newer}" = "alpha.elf" ]; then
+    older="omega.elf"
+  else
+    older="alpha.elf"
+  fi
   root="$(mktemp -d "${TMPDIR:-/tmp}/flash-sh-elfpick.XXXXXXXX")"
   mkdir -p "${root}/.pio/build/t-deck-tft"
   touch -t 202601010000 "${root}/.pio/build/t-deck-tft/${older}"
@@ -218,6 +222,8 @@ elf_checked_by_guard() {
   : >"${nm_rec}"
   (
     cd "${root}" || exit 1
+    # Read by fh_find_nm inside the sourced flash.sh, not by this script.
+    # shellcheck disable=SC2034
     FLASH_SH_DIR="${fake_root}"
     export FLASH_TEST_NM_REC="${nm_rec}"
     fh_assert_mui_binary t-deck-tft
