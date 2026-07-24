@@ -12,6 +12,7 @@ every other build-tooling test) actually reachable from CI.
 """
 
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -206,6 +207,63 @@ def test_render_build_info_cpp_epoch_int_and_str_are_identical():
     from_int = build_info.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
     from_str = build_info.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_STR)
     assert from_int == from_str, (from_int, from_str)
+
+
+# --- The rendered version must always be a well-formed C++ string literal ------------
+# version_long is interpolated straight into a C++ string literal. Today it is
+# "<semver>.<git short sha>", so it happens to contain nothing that needs escaping - but
+# the renderer must not depend on that staying true. A version scheme change, or a tag
+# with an odd character in it, would otherwise emit a translation unit that does not
+# compile, and the failure would surface as a baffling syntax error inside a GENERATED,
+# gitignored file rather than as a bad input.
+#
+# The hostile sample below is the smallest string that breaks naive concatenation: the
+# embedded double quote closes the literal early, and the backslash then escapes
+# whatever character follows it.
+HOSTILE_VERSION_LONG = '2.8.0.a"b\\c'
+# The single correctly-escaped C++ spelling of HOSTILE_VERSION_LONG, written out by
+# hand so this test states the expected output instead of re-deriving it: literally
+#     "2.8.0.a\"b\\c"
+HOSTILE_VERSION_LITERAL = '"2.8.0.a\\"b\\\\c"'
+BUILD_VERSION_SYMBOL = "meshtastic_build_version"
+
+
+def cpp_string_literal_for(cpp, symbol):
+    """Return the verbatim C++ string literal that ``symbol`` is initialised with.
+
+    Args:
+        cpp: The full rendered source of the generated translation unit.
+        symbol: The variable name whose initialiser is wanted.
+
+    Returns:
+        The literal exactly as emitted, surrounding quotes included and the
+        statement's trailing ``;`` removed.
+    """
+    marker = symbol + " = "
+    for line in cpp.splitlines():
+        if marker in line:
+            return line.split(marker, 1)[1].strip().rstrip(";")
+    raise AssertionError(f"no initialiser for {symbol} found in:\n{cpp}")
+
+
+def test_render_build_info_cpp_escapes_the_version_string_literal():
+    """A version_long containing a quote or a backslash must still emit valid C++.
+
+    Two independent checks, because "it did not crash" proves nothing here: the emitted
+    literal must match the one correct escaping byte-for-byte, and it must round-trip
+    back to the original through a real string-literal parser (JSON escaping is a subset
+    of C++'s for this content), which is what "well-formed" actually means.
+    """
+    cpp = build_info.render_build_info_cpp(HOSTILE_VERSION_LONG, SAMPLE_EPOCH_INT)
+    literal = cpp_string_literal_for(cpp, BUILD_VERSION_SYMBOL)
+    assert literal == HOSTILE_VERSION_LITERAL, (
+        f"{BUILD_VERSION_SYMBOL} was emitted as {literal!r}, not the correctly-escaped "
+        f"{HOSTILE_VERSION_LITERAL!r}; the generated TU would not compile"
+    )
+    assert json.loads(literal) == HOSTILE_VERSION_LONG, (
+        f"the emitted literal {literal!r} does not parse back to the version it was "
+        f"built from ({HOSTILE_VERSION_LONG!r})"
+    )
 
 
 def _read_source(name):
@@ -594,6 +652,45 @@ def test_ordering_check_accepts_a_pre_registered_generator():
         assert not late, f"a pre-registered generator was reported as late: {late}"
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+# --- The generated banner must name the script that really generates the TU ----------
+# src/build_info.cpp is gitignored and machine-written, so its first line is the only
+# breadcrumb a reader has back to the code that produced it. When generation moved from
+# the post script to the pre script the banner kept naming the old one, which sends
+# anyone who greps for it to a file that no longer generates anything.
+BANNER_LINE_INDEX = 0
+
+
+def test_generated_banner_names_the_script_that_generates_it():
+    """The banner must name the actual generator, and no other extra script.
+
+    The expectation is derived from platformio.ini via the same scan the ordering guard
+    uses - never hardcoded here - so renaming or moving the generator makes this test
+    fail loudly instead of quietly blessing a stale pointer.
+    """
+    generators = build_info_generator_entries()
+    assert generators, (
+        f"no extra_script in {PLATFORMIO_INI_NAME} generates src/{GENERATED_TU_NAME}, so "
+        "there is nothing for the banner to name"
+    )
+    generator_paths = [split_extra_script(entry)[1] for entry, _ in generators]
+    cpp = build_info.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
+    banner = cpp.splitlines()[BANNER_LINE_INDEX]
+    assert any(path in banner for path in generator_paths), (
+        f"the generated banner {banner!r} names none of the scripts that actually "
+        f"generate src/{GENERATED_TU_NAME} ({generator_paths})"
+    )
+    impostors = [
+        path
+        for path in (split_extra_script(entry)[1] for entry in parse_extra_scripts())
+        if path not in generator_paths and path in banner
+    ]
+    assert not impostors, (
+        f"the generated banner {banner!r} names {impostors}, which do not generate "
+        f"src/{GENERATED_TU_NAME}; a reader who greps for the named script lands in the "
+        "wrong file"
+    )
 
 
 # --- One definition of the build epoch, shared by every consumer -------------------
