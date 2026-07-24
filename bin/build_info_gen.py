@@ -1,4 +1,8 @@
-"""Pure build-info helpers that isolate volatile version macros (GitHub issue #8).
+"""Generator for src/build_info.cpp - isolates the volatile version macros (issue #8).
+
+Not to be confused with ``bin/buildinfo.py``, the unrelated one-line CLI that prints a
+single property out of ``version.properties``. This module generates the C++ translation
+unit that carries the build identity; that one answers ``./bin/buildinfo.py long``.
 
 Background
 ----------
@@ -53,7 +57,7 @@ GENERATED_TU_RELPATH = ("src", "build_info.cpp")
 # file so a reader of that machine-written, gitignored source can find its producer.
 # It cannot be derived at runtime - this module is imported, not the generator, and the
 # helpers below are also called straight from the tests - so it is one constant here,
-# and bin/test_platformio_custom.py cross-checks it against the `pre:` extra_scripts
+# and bin/test_build_tooling.py cross-checks it against the `pre:` extra_scripts
 # entry in platformio.ini, which is what actually runs the generation.
 GENERATOR_SCRIPT_RELPATH = "bin/platformio-pre.py"
 

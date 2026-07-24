@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
 
-"""Tests for the build tooling in bin/ (see GitHub issue #8).
+"""Tests for the build tooling in bin/ and the build surfaces it feeds (issue #8).
 
-Most of these cover bin/build_info.py: the pure, importable core that isolates
-the two volatile version macros (APP_VERSION, BUILD_EPOCH) into a single
-generated translation unit so they no longer land on the global src/ CCFLAGS
-and force a full recompile on every commit / every day.
+What is covered here, roughly in file order:
 
-The rest cover bin/run-build-tests.sh, the runner that makes this file (and
-every other build-tooling test) actually reachable from CI.
+* bin/build_info_gen.py - the pure, importable core that isolates the two volatile
+  version macros (APP_VERSION, BUILD_EPOCH) into a single generated translation
+  unit so they no longer land on the global src/ CCFLAGS and force a full
+  recompile on every commit / every day; plus the C++ renderer for that TU and the
+  shared build-epoch helper.
+* A repo-wide scan of every surface a -D flag can reach a compiler from
+  (platformio.ini, variants/, bin/, extra_scripts/, the workflows), so the ban on
+  the volatile macros cannot be re-introduced anywhere - not just in
+  bin/platformio-custom.py, which an earlier one-file version of this guard
+  watched while the same injection survived in bin/check-all.sh.
+* platformio.ini's extra_scripts ordering: the TU generator must run as a `pre:`
+  script, before PlatformIO globs src/.
+* A scan of src/ and variants/ for the abolished MESHTASTIC_HAS_BUILD_EPOCH
+  presence marker.
+* bin/run-build-tests.sh, the runner that makes this file (and every other
+  build-tooling test) actually reachable from CI, and the main_matrix.yml wiring
+  that invokes it.
+
+Every guard here also has a mutation test that plants a violation in a throwaway
+tree and requires the guard to go red: a guard that cannot fail is worthless.
 """
 
 import datetime
@@ -24,7 +39,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import build_info
+import build_info_gen
 
 # Sample inputs reused across the flag tests.
 SAMPLE_VERSION_SHORT = "2.8.0"
@@ -39,10 +54,33 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PLATFORMIO_INI_NAME = "platformio.ini"
 BUILD_TEST_RUNNER = os.path.join(REPO_ROOT, "bin", "run-build-tests.sh")
 MAIN_MATRIX_WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "main_matrix.yml")
+
+
+def repo_relpath(path):
+    """Return ``path`` as a POSIX path relative to the repository root.
+
+    Used to name this module and the module it tests without ever writing either
+    filename down. Both have been renamed once already, and a hardcoded literal
+    turns the next rename into a silent hole in a guard (an exemption that stops
+    matching) or a self-referential test asserting a file that no longer exists.
+
+    Args:
+        path: Any path inside this checkout, absolute or relative.
+
+    Returns:
+        The repo-root-relative path as a ``str`` with forward slashes.
+    """
+    return pathlib.Path(os.path.abspath(path)).relative_to(REPO_ROOT).as_posix()
+
+
+# This test module and the generator module it covers, both derived rather than spelled
+# out: see repo_relpath() for why neither name may be hardcoded.
+SELF_RELPATH = repo_relpath(__file__)
+BUILD_INFO_GEN_RELPATH = repo_relpath(build_info_gen.__file__)
 # The build-tooling guard tests that must be discovered. Both were orphaned -
 # runnable only by hand - until bin/run-build-tests.sh started auto-discovering
 # them, which is exactly the failure mode the runner exists to prevent.
-KNOWN_BUILD_TESTS = ("bin/test_platformio_custom.py", "pio.test.sh")
+KNOWN_BUILD_TESTS = (SELF_RELPATH, "pio.test.sh")
 SUBPROCESS_TIMEOUT_SECONDS = 300
 CHECK_ALL_SCRIPT = os.path.join(REPO_ROOT, "bin", "check-all.sh")
 
@@ -64,14 +102,16 @@ BUILD_SURFACE_GLOBS = (
 )
 
 # Files that contain the forbidden literals while *documenting* the ban rather than
-# performing it. Kept as an explicit, exhaustive path list - never a wildcard or a
-# directory - so a genuine re-introduction cannot hide behind a filename.
+# performing it. Still an exhaustive list of exactly two paths - never a wildcard or a
+# directory - so a genuine re-introduction cannot hide behind a filename; the two are
+# derived from the modules themselves so that renaming either cannot silently widen the
+# exemption to a file that no longer documents anything.
 VOLATILE_SCAN_EXEMPT_PATHS = (
     # Defines VOLATILE_MACROS; its module and function docstrings quote the banned
     # flags to explain why they were removed from the global CCFLAGS.
-    "bin/build_info.py",
+    BUILD_INFO_GEN_RELPATH,
     # This guard itself: its assertions and fixtures quote the banned flags.
-    "bin/test_platformio_custom.py",
+    SELF_RELPATH,
 )
 
 # Comment leaders per file type. Everything from the first leader on a line is dropped
@@ -91,9 +131,9 @@ DEFAULT_COMMENT_LEADERS = ("#",)
 
 
 def volatile_macro_flag_patterns():
-    """Compile the forbidden ``-D<macro>=`` patterns from build_info.VOLATILE_MACROS.
+    """Compile the forbidden ``-D<macro>=`` patterns from build_info_gen.VOLATILE_MACROS.
 
-    Derived, never hardcoded: :data:`build_info.VOLATILE_MACROS` is the single
+    Derived, never hardcoded: :data:`build_info_gen.VOLATILE_MACROS` is the single
     definition of which macros are banned from any compile line (issue #8).
 
     ``-D\\s*`` also catches the spaced ``-D APP_VERSION=`` form that platformio.ini
@@ -101,10 +141,10 @@ def volatile_macro_flag_patterns():
     legitimate, stable ``-DAPP_VERSION_SHORT=`` replacement from matching.
 
     Returns:
-        A ``list[re.Pattern]``, one per entry of ``build_info.VOLATILE_MACROS``.
+        A ``list[re.Pattern]``, one per entry of ``build_info_gen.VOLATILE_MACROS``.
     """
     return [
-        re.compile(r"-D\s*" + re.escape(macro) + "=") for macro in build_info.VOLATILE_MACROS
+        re.compile(r"-D\s*" + re.escape(macro) + "=") for macro in build_info_gen.VOLATILE_MACROS
     ]
 
 
@@ -161,7 +201,7 @@ def test_global_flags_exclude_volatile_macros():
     that issue #8 moves into the generated TU. Using startswith("-DAPP_VERSION=")
     avoids matching the legitimate -DAPP_VERSION_SHORT= flag.
     """
-    flags = build_info.assemble_global_flags(
+    flags = build_info_gen.assemble_global_flags(
         SAMPLE_VERSION_SHORT,
         SAMPLE_ENV,
         SAMPLE_REPO,
@@ -177,7 +217,7 @@ def test_global_flags_exclude_volatile_macros():
 
 def test_global_flags_keep_stable_macros_and_prefs():
     """The stable macros and every pref flag stay on the global CCFLAGS."""
-    flags = build_info.assemble_global_flags(
+    flags = build_info_gen.assemble_global_flags(
         SAMPLE_VERSION_SHORT,
         SAMPLE_ENV,
         SAMPLE_REPO,
@@ -191,7 +231,7 @@ def test_global_flags_keep_stable_macros_and_prefs():
 
 def test_render_build_info_cpp_bakes_volatile_values():
     """The generated TU includes the header and bakes the volatile values."""
-    cpp = build_info.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
+    cpp = build_info_gen.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
     assert '#include "build_info.h"' in cpp, cpp
     assert (
         'const char *const meshtastic_build_version = "2.8.0.abc1234";' in cpp
@@ -204,8 +244,8 @@ def test_render_build_info_cpp_bakes_volatile_values():
 
 def test_render_build_info_cpp_epoch_int_and_str_are_identical():
     """build_epoch may arrive as an int or a numeric string; output must match."""
-    from_int = build_info.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
-    from_str = build_info.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_STR)
+    from_int = build_info_gen.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
+    from_str = build_info_gen.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_STR)
     assert from_int == from_str, (from_int, from_str)
 
 
@@ -254,7 +294,7 @@ def test_render_build_info_cpp_escapes_the_version_string_literal():
     back to the original through a real string-literal parser (JSON escaping is a subset
     of C++'s for this content), which is what "well-formed" actually means.
     """
-    cpp = build_info.render_build_info_cpp(HOSTILE_VERSION_LONG, SAMPLE_EPOCH_INT)
+    cpp = build_info_gen.render_build_info_cpp(HOSTILE_VERSION_LONG, SAMPLE_EPOCH_INT)
     literal = cpp_string_literal_for(cpp, BUILD_VERSION_SYMBOL)
     assert literal == HOSTILE_VERSION_LITERAL, (
         f"{BUILD_VERSION_SYMBOL} was emitted as {literal!r}, not the correctly-escaped "
@@ -291,7 +331,7 @@ def test_no_build_surface_injects_a_volatile_macro():
     -DAPP_VERSION= injection survived in bin/check-all.sh and the guard never saw it.
     This scans every surface a -D flag can reach a compiler from (see
     BUILD_SURFACE_GLOBS) and derives the forbidden list from
-    build_info.VOLATILE_MACROS, so there is exactly one definition of what is banned.
+    build_info_gen.VOLATILE_MACROS, so there is exactly one definition of what is banned.
     """
     hits = scan_build_surfaces_for_volatile_macros()
     detail = "\n".join(f"  {rel}:{line}: {text!r} in {src!r}" for rel, line, text, src in hits)
@@ -382,9 +422,11 @@ LEGITIMATE_LOOKALIKES = {
         "# never re-introduce -DAPP_VERSION= or -DBUILD_EPOCH= on the global flags\n"
         'pio check --flags "-DAPP_VERSION_SHORT=${APP_VERSION}"\n'
     ),
-    # Exempt paths document the ban and must stay readable.
-    "bin/build_info.py": 'VOLATILE_MACROS = ("APP_VERSION", "BUILD_EPOCH")  # bans -DAPP_VERSION=\n',
-    "bin/test_platformio_custom.py": 'assert "-DBUILD_EPOCH=" not in flags\n',
+    # Exempt paths document the ban and must stay readable. Keyed off the same derived
+    # constants the exemption itself uses, so this fixture cannot drift away from it and
+    # start "passing" by planting a file nobody exempts.
+    BUILD_INFO_GEN_RELPATH: 'VOLATILE_MACROS = ("APP_VERSION", "BUILD_EPOCH")  # bans -DAPP_VERSION=\n',
+    SELF_RELPATH: 'assert "-DBUILD_EPOCH=" not in flags\n',
 }
 
 
@@ -409,25 +451,25 @@ def test_volatile_macro_scan_ignores_disabled_and_lookalike_lines():
 
 
 def test_volatile_macro_scan_is_driven_by_build_info_volatile_macros():
-    """The banned list must come from build_info.VOLATILE_MACROS, not a second copy.
+    """The banned list must come from build_info_gen.VOLATILE_MACROS, not a second copy.
 
     Proves the constant is load-bearing: a macro the scan ignores today starts being
     flagged the moment it is added to VOLATILE_MACROS, and nothing else needs editing.
     """
     root = _scratch_surface_root()
-    original = build_info.VOLATILE_MACROS
+    original = build_info_gen.VOLATILE_MACROS
     try:
         _plant(root, "bin/planted.py", '["-DAPP_VERSION_SHORT=1.0", "-DPLANTED_MACRO=1"]\n')
         assert not scan_build_surfaces_for_volatile_macros(
             root
         ), "-DPLANTED_MACRO= was flagged before it was declared volatile"
-        build_info.VOLATILE_MACROS = original + ("PLANTED_MACRO",)
+        build_info_gen.VOLATILE_MACROS = original + ("PLANTED_MACRO",)
         hits = scan_build_surfaces_for_volatile_macros(root)
         assert [(rel, text) for rel, _, text, _ in hits] == [
             ("bin/planted.py", "-DPLANTED_MACRO=")
         ], f"adding a macro to VOLATILE_MACROS did not drive the scan: {hits}"
     finally:
-        build_info.VOLATILE_MACROS = original
+        build_info_gen.VOLATILE_MACROS = original
         shutil.rmtree(root, ignore_errors=True)
 
 
@@ -447,7 +489,7 @@ def test_volatile_macro_scan_is_driven_by_build_info_volatile_macros():
 PRE_SCRIPT_PREFIX = "pre:"
 POST_SCRIPT_PREFIX = "post:"
 EXTRA_SCRIPT_PREFIXES = (PRE_SCRIPT_PREFIX, POST_SCRIPT_PREFIX)
-# Basename of the generated translation unit, and the bin/build_info.py helpers that
+# Basename of the generated translation unit, and the bin/build_info_gen.py helpers that
 # produce it. A script counts as the generator if it names the file or calls either
 # helper, so the check keys off *what a script does* rather than its filename and keeps
 # working if the build scripts are renamed.
@@ -675,7 +717,7 @@ def test_generated_banner_names_the_script_that_generates_it():
         "there is nothing for the banner to name"
     )
     generator_paths = [split_extra_script(entry)[1] for entry, _ in generators]
-    cpp = build_info.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
+    cpp = build_info_gen.render_build_info_cpp(SAMPLE_VERSION_LONG, SAMPLE_EPOCH_INT)
     banner = cpp.splitlines()[BANNER_LINE_INDEX]
     assert any(path in banner for path in generator_paths), (
         f"the generated banner {banner!r} names none of the scripts that actually "
@@ -698,19 +740,19 @@ def test_generated_banner_names_the_script_that_generates_it():
 # script) and the build manifest's "build_epoch" field (written by the post script).
 # Two inline copies of `datetime.now().replace(hour=0, ...)` would be two definitions
 # that can drift - and, across a local-midnight rollover, actually disagree within one
-# build. Everything must go through build_info.compute_build_epoch().
+# build. Everything must go through build_info_gen.compute_build_epoch().
 INLINE_EPOCH_COMPUTATION = "replace(hour=0"
 BUILD_EPOCH_HELPER = "compute_build_epoch"
 
 
 def test_build_epoch_helper_exists_and_is_midnight_local():
-    """build_info.compute_build_epoch() returns midnight (local) on the build day."""
-    assert hasattr(build_info, BUILD_EPOCH_HELPER), (
-        f"bin/build_info.py defines no {BUILD_EPOCH_HELPER}(): the build epoch has no "
-        "shared definition, so the generated TU and the build manifest each need their "
-        "own copy of the computation"
+    """build_info_gen.compute_build_epoch() returns midnight (local) on the build day."""
+    assert hasattr(build_info_gen, BUILD_EPOCH_HELPER), (
+        f"{BUILD_INFO_GEN_RELPATH} defines no {BUILD_EPOCH_HELPER}(): the build epoch "
+        "has no shared definition, so the generated TU and the build manifest each need "
+        "their own copy of the computation"
     )
-    epoch = build_info.compute_build_epoch()
+    epoch = build_info_gen.compute_build_epoch()
     when = datetime.datetime.fromtimestamp(epoch)
     assert (when.hour, when.minute, when.second, when.microsecond) == (0, 0, 0, 0), (
         f"compute_build_epoch() returned {epoch} = {when}, which is not local midnight"
@@ -725,8 +767,8 @@ def test_build_epoch_is_stable_across_calls_within_one_build():
     time, a build spanning local midnight would bake one epoch into the TU and write a
     different one into the manifest.
     """
-    assert hasattr(build_info, BUILD_EPOCH_HELPER), f"no {BUILD_EPOCH_HELPER}()"
-    assert build_info.compute_build_epoch() == build_info.compute_build_epoch()
+    assert hasattr(build_info_gen, BUILD_EPOCH_HELPER), f"no {BUILD_EPOCH_HELPER}()"
+    assert build_info_gen.compute_build_epoch() == build_info_gen.compute_build_epoch()
 
 
 def test_no_extra_script_computes_the_build_epoch_inline():
@@ -742,7 +784,7 @@ def test_no_extra_script_computes_the_build_epoch_inline():
                 offenders.append(rel)
     assert not offenders, (
         f"these extra scripts compute the build epoch inline instead of calling "
-        f"build_info.{BUILD_EPOCH_HELPER}(): {offenders}. A second copy of the "
+        f"build_info_gen.{BUILD_EPOCH_HELPER}(): {offenders}. A second copy of the "
         "computation can drift from the generated TU's value."
     )
 

@@ -9,7 +9,7 @@ import re
 from typing import Dict
 
 from readprops import readProps
-from build_info import assemble_global_flags, compute_build_epoch
+from build_info_gen import assemble_global_flags, compute_build_epoch
 
 Import("env")
 platform = env.PioPlatform()

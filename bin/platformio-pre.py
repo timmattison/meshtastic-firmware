@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # trunk-ignore-all(ruff/F821)
 # trunk-ignore-all(flake8/F821): For SConstruct imports
-from build_info import compute_build_epoch, write_build_info_cpp
+from build_info_gen import compute_build_epoch, write_build_info_cpp
 from readprops import readProps
 
 Import("env")

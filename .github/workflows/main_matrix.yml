@@ -185,7 +185,7 @@ jobs:
   # (bin/*.py, pio.sh), as opposed to test-native above, which tests the firmware
   # itself. bin/run-build-tests.sh discovers them by pattern, so a guard added
   # later is picked up without editing this workflow - which is what went wrong
-  # before: bin/test_platformio_custom.py, bin/test_size_scripts.py and
+  # before: bin/test_build_tooling.py, bin/test_size_scripts.py and
   # pio.test.sh were runnable only by hand and could never fail a PR.
   #
   # Pure python3 + bash, no PlatformIO and no toolchain, so it costs seconds.

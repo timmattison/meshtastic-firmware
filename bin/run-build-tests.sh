@@ -4,7 +4,7 @@
 # Why this exists: bin/run-tests.sh runs the *firmware* tests - it enumerates the
 # test/test_* suite directories and hands them to PlatformIO. Tests that cover the build
 # tooling itself (the scripts under bin/, the pio.sh wrapper) live outside that tree, so
-# nothing ran them. bin/test_platformio_custom.py, bin/test_size_scripts.py and
+# nothing ran them. bin/test_build_tooling.py, bin/test_size_scripts.py and
 # pio.test.sh were all orphaned that way: green forever, because they only ran when
 # somebody remembered to type their name. A regression guard nobody invokes is
 # decorative - the guard against re-introducing the volatile -DAPP_VERSION= /
