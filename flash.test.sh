@@ -3,8 +3,8 @@
 # Behavioral + unit tests for flash.sh.
 #
 # flash.sh's job is to make a Meshtastic MUI (color-UI) install come up
-# correctly on the FIRST try. Two properties matter, and both are tested
-# here without any real PlatformIO install or hardware:
+# correctly on the FIRST try. Three properties matter, and all are tested
+# here without any real PlatformIO install, meshtastic CLI, or hardware:
 #
 #   1. Orchestration: it must ERASE the chip before it uploads. A fresh
 #      config is what makes a HAS_TFT build auto-select displaymode=COLOR
@@ -18,6 +18,12 @@
 #      containing tftSetup and REJECT one that does not (the mutation case
 #      -- proof the guard can actually fail, not just pass).
 #
+#   3. --region: the erase wipes the LoRa region, which leaves the radio
+#      unable to transmit. --region sets it back after the upload. A bad
+#      region name or a missing meshtastic CLI must abort BEFORE the
+#      destructive erase, never after -- discovering a typo only once the
+#      device has been wiped is the failure mode worth designing out.
+#
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,12 +36,9 @@ note_fail() {
   fail=1
 }
 
-# --- 1. Orchestration: erase-before-upload, via a recording `pio` stub ----
 # Parallel-safe: a unique stub dir + record file per run (mktemp), so two
-# concurrent copies of this test never clobber each other's `pio` or log.
+# concurrent copies of this test never clobber each other's stubs or logs.
 stub_dir="$(mktemp -d "${TMPDIR:-/tmp}/flash-sh-test.XXXXXXXX")"
-export FLASH_TEST_REC="${stub_dir}/calls.log"
-: >"${FLASH_TEST_REC}"
 trap 'rm -rf "${stub_dir}"' EXIT
 
 cat >"${stub_dir}/pio" <<'STUB'
@@ -44,12 +47,43 @@ echo "ARGS=$*" >>"${FLASH_TEST_REC}"
 STUB
 chmod +x "${stub_dir}/pio"
 
+# Stand-in for the meshtastic CLI. Records what it was asked to do, and
+# answers --get so flash.sh can read back what it set.
+cat >"${stub_dir}/meshtastic-stub" <<'STUB'
+#!/usr/bin/env bash
+echo "MT=$*" >>"${FLASH_TEST_REC}"
+case "$*" in
+  *"--get lora.region"*) echo "lora.region: US" ;;
+  *"--get display.displaymode"*) echo "display.displaymode: COLOR" ;;
+esac
+STUB
+chmod +x "${stub_dir}/meshtastic-stub"
+
+# run_flash <recfile> <flash.sh args...> -- run flash.sh against the stubs.
+# Returns flash.sh's exit status; the recfile captures the call sequence.
+run_flash() {
+  local rec="$1"
+  shift
+  : >"${rec}"
+  FLASH_TEST_REC="${rec}" \
+    FH_REGION_RETRIES=1 FH_REGION_DELAY=0 \
+    PATH="${stub_dir}:${PATH}" \
+    "${flash_sh}" "$@" >/dev/null 2>&1
+}
+
+# line_of <recfile> <fixed-string> -- 1-based line number of first match, or "".
+line_of() {
+  grep -nF "$2" "$1" 2>/dev/null | head -1 | cut -d: -f1 || true
+}
+
+# --- 1. Orchestration: erase-before-upload -------------------------------
 # A non-tft env skips the binary guard, so this run exercises pure
 # orchestration. -y skips the destructive-erase confirmation prompt.
-PATH="${stub_dir}:${PATH}" "${flash_sh}" -e heltec-v3 -y >/dev/null 2>&1 || true
+rec1="${stub_dir}/calls1.log"
+run_flash "${rec1}" -e heltec-v3 -y || true
 
-erase_line="$(grep -nF 'ARGS=run -e heltec-v3 -t erase' "${FLASH_TEST_REC}" | head -1 | cut -d: -f1 || true)"
-upload_line="$(grep -nF 'ARGS=run -e heltec-v3 -t upload' "${FLASH_TEST_REC}" | head -1 | cut -d: -f1 || true)"
+erase_line="$(line_of "${rec1}" 'ARGS=run -e heltec-v3 -t erase')"
+upload_line="$(line_of "${rec1}" 'ARGS=run -e heltec-v3 -t upload')"
 
 [ -n "${erase_line}" ] || note_fail "flash.sh did not erase the chip (no 'run -e heltec-v3 -t erase' call)"
 [ -n "${upload_line}" ] || note_fail "flash.sh did not upload (no 'run -e heltec-v3 -t upload' call)"
@@ -78,12 +112,65 @@ fi
 # large producer whose match comes first must still succeed under pipefail.
 if ! (
   set -o pipefail
-  { printf 'tftSetup\n'; seq 1 200000; } | fh_symbols_have_tftsetup
+  {
+    printf 'tftSetup\n'
+    seq 1 200000
+  } | fh_symbols_have_tftsetup
 ); then
   note_fail "fh_symbols_have_tftsetup must not SIGPIPE its producer under pipefail"
 fi
 
+# --- 3. --region ---------------------------------------------------------
+# Region names are derived from the protobuf header, so the accepted set
+# cannot drift as new regions are added upstream.
+fh_is_valid_region "US" || note_fail "fh_is_valid_region should accept 'US'"
+fh_is_valid_region "EU_868" || note_fail "fh_is_valid_region should accept 'EU_868'"
+# Mutation: a bogus name must be rejected, or validation is decorative.
+if fh_is_valid_region "NOT_A_REGION"; then
+  note_fail "fh_is_valid_region should REJECT 'NOT_A_REGION' (validation never fails)"
+fi
+# UNSET is the "no region" value -- accepting it would defeat the flag.
+if fh_is_valid_region "UNSET"; then
+  note_fail "fh_is_valid_region should REJECT 'UNSET'"
+fi
+
+# --region must set the region, and only AFTER the upload has landed.
+rec3="${stub_dir}/calls3.log"
+FH_MESHTASTIC_BIN="${stub_dir}/meshtastic-stub" run_flash "${rec3}" -e heltec-v3 -y --region US || true
+
+up3="$(line_of "${rec3}" 'ARGS=run -e heltec-v3 -t upload')"
+set3="$(line_of "${rec3}" 'MT=--set lora.region US')"
+[ -n "${set3}" ] || note_fail "--region US did not set the region (no 'meshtastic --set lora.region US' call)"
+if [ -n "${up3}" ] && [ -n "${set3}" ] && [ "${set3}" -le "${up3}" ]; then
+  note_fail "--region set the region before the upload (set@${set3} not after upload@${up3})"
+fi
+
+# A bogus region must abort BEFORE the erase -- never wipe a device and only
+# then discover the region name was a typo.
+rec4="${stub_dir}/calls4.log"
+if FH_MESHTASTIC_BIN="${stub_dir}/meshtastic-stub" run_flash "${rec4}" -e heltec-v3 -y --region BOGUS_REGION; then
+  note_fail "--region BOGUS_REGION should fail, but flash.sh exited 0"
+fi
+if [ -n "$(line_of "${rec4}" 'ARGS=run -e heltec-v3 -t erase')" ]; then
+  note_fail "--region BOGUS_REGION erased the chip before validating the region"
+fi
+
+# A missing meshtastic CLI must fail loudly and BEFORE the erase, rather than
+# silently skipping the region step and leaving a wiped, non-transmitting radio.
+rec5="${stub_dir}/calls5.log"
+if FH_MESHTASTIC_BIN="${stub_dir}/definitely-not-installed" run_flash "${rec5}" -e heltec-v3 -y --region US; then
+  note_fail "--region with no meshtastic CLI should fail, but flash.sh exited 0"
+fi
+if [ -n "$(line_of "${rec5}" 'ARGS=run -e heltec-v3 -t erase')" ]; then
+  note_fail "--region with no meshtastic CLI erased the chip before checking for the CLI"
+fi
+
+# Without --region, nothing should touch the meshtastic CLI.
+if [ -n "$(line_of "${rec1}" 'MT=--set')" ]; then
+  note_fail "flash.sh set a region even though --region was not passed"
+fi
+
 if [ "${fail}" -eq 0 ]; then
-  echo "PASS: flash.sh erases before upload and enforces the HAS_TFT guard"
+  echo "PASS: flash.sh erases before upload, enforces the HAS_TFT guard, and sets --region safely"
 fi
 exit "${fail}"

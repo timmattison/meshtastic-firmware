@@ -67,6 +67,16 @@ fh_symbols_have_tftsetup() {
   grep 'tftSetup' >/dev/null 2>&1
 }
 
+# WRONG on purpose (red): accepts every region name, including bogus ones.
+fh_is_valid_region() {
+  return 0
+}
+
+# fh_meshtastic_bin -> the meshtastic CLI to drive (overridable for tests).
+fh_meshtastic_bin() {
+  printf '%s\n' "${FH_MESHTASTIC_BIN:-meshtastic}"
+}
+
 # fh_find_nm -> path to an nm that can read the build ELF. Prefer this
 # worktree's isolated toolchain (what pio.sh populates), then the shared one,
 # then whatever nm is on PATH. Prints the path; returns non-zero if none found.
@@ -150,6 +160,7 @@ fh_main() {
   set -euo pipefail
   local env="" assume_yes=0 do_erase=1
   FH_PORT=""
+  FH_REGION=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -e | --environment)
@@ -167,6 +178,11 @@ fh_main() {
       --no-erase)
         do_erase=0
         shift
+        ;;
+      --region)
+        # red: parsed but otherwise ignored
+        FH_REGION="${2:-}"
+        shift 2
         ;;
       -h | --help)
         fh_usage
