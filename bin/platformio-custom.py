@@ -6,11 +6,10 @@ from os.path import join
 import subprocess
 import json
 import re
-from datetime import datetime
 from typing import Dict
 
 from readprops import readProps
-from build_info import render_build_info_cpp, assemble_global_flags
+from build_info import assemble_global_flags, compute_build_epoch
 
 Import("env")
 platform = env.PioPlatform()
@@ -315,24 +314,14 @@ for pref in userPrefs:
     else:
         pref_flags.append("-D" + pref + "=" + env.StringifyMacro(userPrefs[pref]) + "")
 
-# General options that are passed to the C and C++ compilers
-# Calculate unix epoch for current day (midnight)
-current_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-build_epoch = int(current_date.timestamp())
-
-# Isolate the volatile version identity (git SHA + build epoch) into a single generated
-# translation unit so a new commit or the daily epoch rollover recompiles only build_info.o
-# + relink, instead of all of src/. See issue #8 and src/build_info.h.
-build_info_path = join(env["PROJECT_DIR"], "src", "build_info.cpp")
-build_info_src = render_build_info_cpp(verObj["long"], build_epoch)
-try:
-    with open(build_info_path) as _bi:
-        _existing = _bi.read()
-except OSError:
-    _existing = None
-if _existing != build_info_src:
-    with open(build_info_path, "w") as _bi:
-        _bi.write(build_info_src)
+# Unix epoch for the current day (midnight, local time), for the build manifest below.
+#
+# The same value is baked into the generated translation unit, which bin/platformio-pre.py
+# writes - it has to run there, because this script is registered WITHOUT a prefix and an
+# unprefixed extra_script is a POST script, i.e. it runs after PlatformIO has already
+# globbed src/ and fixed the source list. Both callers go through compute_build_epoch(),
+# which memoizes per process, so the manifest and the generated TU can never disagree.
+build_epoch = compute_build_epoch()
 
 # Only the STABLE app-identity macros (short version, env, repo) plus the user-pref
 # flags go on the global compile line. The volatile APP_VERSION (git SHA) and
