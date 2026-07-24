@@ -11,6 +11,7 @@ The rest cover bin/run-build-tests.sh, the runner that makes this file (and
 every other build-tooling test) actually reachable from CI.
 """
 
+import datetime
 import os
 import pathlib
 import re
@@ -33,6 +34,7 @@ SAMPLE_EPOCH_INT = 1753315200
 SAMPLE_EPOCH_STR = "1753315200"
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+PLATFORMIO_INI_NAME = "platformio.ini"
 BUILD_TEST_RUNNER = os.path.join(REPO_ROOT, "bin", "run-build-tests.sh")
 MAIN_MATRIX_WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "main_matrix.yml")
 # The build-tooling guard tests that must be discovered. Both were orphaned -
@@ -368,6 +370,283 @@ def test_volatile_macro_scan_is_driven_by_build_info_volatile_macros():
     finally:
         build_info.VOLATILE_MACROS = original
         shutil.rmtree(root, ignore_errors=True)
+
+
+# --- extra_scripts ordering: the generated TU must exist before src/ is globbed ---
+# PlatformIO's builder/main.py runs, in order:
+#   env.SConscript(env.GetExtraScripts("pre"))   <- "pre:" entries
+#   env.SConscript("$BUILD_SCRIPT")              <- BuildSources() globs $PROJECT_SRC_DIR
+#   env.SConscript(env.GetExtraScripts("post"))  <- "post:" AND unprefixed entries
+# The glob is eager (piobuild.py CollectBuildFiles -> fs.match_src_files returns a
+# concrete list), and src/build_info.cpp is gitignored precisely because its content
+# changes every commit. So a generator that runs anywhere but "pre:" writes the file
+# after the file list is already fixed: on any clean checkout the TU is never compiled
+# and the link dies with undefined references to meshtastic_build_version /
+# meshtastic_build_epoch. PlatformIO says as much itself - BuildSources() raises "The
+# main program is already constructed ... Please use env.BuildLibrary(...) or PRE-type
+# script instead."
+PRE_SCRIPT_PREFIX = "pre:"
+POST_SCRIPT_PREFIX = "post:"
+EXTRA_SCRIPT_PREFIXES = (PRE_SCRIPT_PREFIX, POST_SCRIPT_PREFIX)
+# Basename of the generated translation unit, and the bin/build_info.py helpers that
+# produce it. A script counts as the generator if it names the file or calls either
+# helper, so the check keys off *what a script does* rather than its filename and keeps
+# working if the build scripts are renamed.
+GENERATED_TU_NAME = "build_info.cpp"
+BUILD_INFO_GENERATOR_CALLS = ("render_build_info_cpp", "write_build_info_cpp")
+
+
+def split_extra_script(entry):
+    """Split an ``extra_scripts`` entry into its ``(prefix, path)`` parts.
+
+    An entry with no recognised prefix gets ``""``; PlatformIO treats that as POST,
+    which is exactly the failure mode these tests exist to catch.
+
+    Args:
+        entry: One verbatim ``extra_scripts`` value, e.g. ``"pre:bin/foo.py"``.
+
+    Returns:
+        A ``(prefix, relative_path)`` tuple.
+    """
+    for prefix in EXTRA_SCRIPT_PREFIXES:
+        if entry.startswith(prefix):
+            return prefix, entry[len(prefix) :].strip()
+    return "", entry
+
+
+def parse_extra_scripts(root=REPO_ROOT):
+    """Return the top-level ``[env] extra_scripts`` entries, prefixes intact.
+
+    Hand-parsed rather than read through configparser so the multi-line, tab-indented
+    PlatformIO value and its ``;`` comments are handled exactly as written. Only the
+    root ``platformio.ini`` is parsed: every variant that touches ``extra_scripts``
+    interpolates ``${env.extra_scripts}``, so this list is the single source of truth.
+
+    Args:
+        root: Directory to treat as the repository root.
+
+    Returns:
+        A ``list[str]`` of entries in declaration order; empty if none are declared.
+    """
+    leaders = COMMENT_LEADERS_BY_SUFFIX[".ini"]
+    entries = []
+    collecting = False
+    with open(os.path.join(root, PLATFORMIO_INI_NAME), errors="replace") as f:
+        for raw in f:
+            indented = raw[:1] in (" ", "\t")
+            code = _strip_comment(raw, leaders).strip()
+            if collecting and indented:
+                if code:
+                    entries.append(code)
+                continue
+            collecting = False
+            if not indented and re.match(r"extra_scripts\s*=", code):
+                collecting = True
+                head = code.split("=", 1)[1].strip()
+                if head:
+                    entries.append(head)
+    return entries
+
+
+def script_generates_build_info(path):
+    """Whether the script at ``path`` generates ``src/build_info.cpp``.
+
+    Comments are stripped before matching (same reasoning as the volatile-macro scan):
+    prose that merely *mentions* the generated TU - for instance a note in the post
+    script explaining that generation moved to the pre script - is documentation, not
+    generation, and must not be mistaken for it.
+
+    Args:
+        path: Absolute path to a candidate extra script.
+
+    Returns:
+        ``True`` if the script writes/renders the generated translation unit.
+    """
+    if not os.path.isfile(path):
+        return False
+    leaders = COMMENT_LEADERS_BY_SUFFIX.get(os.path.splitext(path)[1], DEFAULT_COMMENT_LEADERS)
+    with open(path, errors="replace") as f:
+        for raw in f:
+            code = _strip_comment(raw, leaders)
+            if GENERATED_TU_NAME in code:
+                return True
+            if any(call + "(" in code for call in BUILD_INFO_GENERATOR_CALLS):
+                return True
+    return False
+
+
+def build_info_generator_entries(root=REPO_ROOT):
+    """Return ``(entry, prefix)`` for every extra script that generates the TU.
+
+    Args:
+        root: Directory to treat as the repository root.
+
+    Returns:
+        A ``list[(entry, prefix)]``; empty when nothing generates the TU at all,
+        which is itself a failure (the symbols would never be defined).
+    """
+    found = []
+    for entry in parse_extra_scripts(root):
+        prefix, rel = split_extra_script(entry)
+        if script_generates_build_info(os.path.join(root, rel)):
+            found.append((entry, prefix))
+    return found
+
+
+def test_extra_scripts_entries_resolve_to_real_files():
+    """Parser sanity: every parsed entry must name a script that exists.
+
+    Without this, a silently-broken parse would make the ordering guard below vacuous -
+    it would find no generators and could then only fail on the "nothing generates it"
+    branch, never on the ordering one it exists to police.
+    """
+    entries = parse_extra_scripts()
+    assert entries, f"no extra_scripts parsed out of {PLATFORMIO_INI_NAME}"
+    for entry in entries:
+        _, rel = split_extra_script(entry)
+        path = os.path.join(REPO_ROOT, rel)
+        assert os.path.isfile(path), f"extra_scripts entry {entry!r} does not exist at {path}"
+
+
+def test_build_info_generator_runs_before_platformio_globs_src():
+    """The generator of src/build_info.cpp must be registered as a `pre:` extra script.
+
+    This is an ordering invariant, not a style preference: the generated TU is
+    gitignored, so on a clean checkout it does not exist when PlatformIO eagerly globs
+    $PROJECT_SRC_DIR. A generator registered unprefixed (= POST) or `post:` creates the
+    file after that glob has already been taken, so it is never compiled and the link
+    fails with undefined references to meshtastic_build_version /
+    meshtastic_build_epoch. See the block comment above for the exact PlatformIO
+    call order.
+    """
+    generators = build_info_generator_entries()
+    assert generators, (
+        f"no extra_script in {PLATFORMIO_INI_NAME} generates src/{GENERATED_TU_NAME}: "
+        "the build-identity symbols would never be defined"
+    )
+    late = [entry for entry, prefix in generators if prefix != PRE_SCRIPT_PREFIX]
+    assert not late, (
+        f"these extra_scripts generate src/{GENERATED_TU_NAME} but are not registered "
+        f"with the {PRE_SCRIPT_PREFIX!r} prefix: {late}. They run AFTER PlatformIO has "
+        "already globbed src/, so on a clean checkout (the TU is gitignored) the file "
+        "is written too late to be compiled and the link fails with undefined "
+        "references to meshtastic_build_version / meshtastic_build_epoch."
+    )
+
+
+# A minimal repo root for driving the ordering check: an ini that registers one
+# generator script, plus the script itself. The {prefix} slot is what the mutation
+# test varies.
+SCRATCH_INI_TEMPLATE = (
+    "[env]\n"
+    "extra_scripts =\n"
+    "\tpre:bin/innocent.py\n"
+    "\t{prefix}bin/generator.py\n"
+    "\tpost:bin/late.py\n"
+    "; a trailing comment ends the value\n"
+    "build_flags = -DFOO=1\n"
+)
+SCRATCH_GENERATOR_SRC = 'write_build_info_cpp(env["PROJECT_DIR"], ver, epoch)\n'
+SCRATCH_INNOCENT_SRC = "# nothing to do with build_info.cpp generation\nprint('hi')\n"
+
+
+def _scratch_ordering_root(prefix):
+    """Build a throwaway repo root whose generator carries ``prefix``.
+
+    mkdtemp() yields a unique directory per call, so concurrent copies of these tests
+    never share a scratch tree. Returns the tmp root; the caller removes it.
+    """
+    root = tempfile.mkdtemp(prefix=f"extra-scripts-{os.getpid()}-")
+    _plant(root, PLATFORMIO_INI_NAME, SCRATCH_INI_TEMPLATE.format(prefix=prefix))
+    _plant(root, "bin/generator.py", SCRATCH_GENERATOR_SRC)
+    _plant(root, "bin/innocent.py", SCRATCH_INNOCENT_SRC)
+    _plant(root, "bin/late.py", SCRATCH_INNOCENT_SRC)
+    return root
+
+
+def test_ordering_check_flags_a_generator_that_is_not_a_pre_script():
+    """Mutation check: a POST-registered generator must be detected, for both spellings.
+
+    An unprefixed entry and an explicit `post:` entry are the same thing to PlatformIO,
+    and both are wrong here. A guard that cannot go red is worthless.
+    """
+    for prefix in ("", POST_SCRIPT_PREFIX):
+        root = _scratch_ordering_root(prefix)
+        try:
+            found = build_info_generator_entries(root)
+            assert found == [(prefix + "bin/generator.py", prefix)], (
+                f"the {prefix or 'unprefixed'} generator was not detected: {found}"
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def test_ordering_check_accepts_a_pre_registered_generator():
+    """The same tree with the generator moved to `pre:` must pass the ordering rule."""
+    root = _scratch_ordering_root(PRE_SCRIPT_PREFIX)
+    try:
+        found = build_info_generator_entries(root)
+        assert found == [
+            (PRE_SCRIPT_PREFIX + "bin/generator.py", PRE_SCRIPT_PREFIX)
+        ], f"the pre-registered generator was not recognised: {found}"
+        late = [entry for entry, prefix in found if prefix != PRE_SCRIPT_PREFIX]
+        assert not late, f"a pre-registered generator was reported as late: {late}"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+# --- One definition of the build epoch, shared by every consumer -------------------
+# The epoch lands in two independent artifacts: the generated TU (written by the pre
+# script) and the build manifest's "build_epoch" field (written by the post script).
+# Two inline copies of `datetime.now().replace(hour=0, ...)` would be two definitions
+# that can drift - and, across a local-midnight rollover, actually disagree within one
+# build. Everything must go through build_info.compute_build_epoch().
+INLINE_EPOCH_COMPUTATION = "replace(hour=0"
+BUILD_EPOCH_HELPER = "compute_build_epoch"
+
+
+def test_build_epoch_helper_exists_and_is_midnight_local():
+    """build_info.compute_build_epoch() returns midnight (local) on the build day."""
+    assert hasattr(build_info, BUILD_EPOCH_HELPER), (
+        f"bin/build_info.py defines no {BUILD_EPOCH_HELPER}(): the build epoch has no "
+        "shared definition, so the generated TU and the build manifest each need their "
+        "own copy of the computation"
+    )
+    epoch = build_info.compute_build_epoch()
+    when = datetime.datetime.fromtimestamp(epoch)
+    assert (when.hour, when.minute, when.second, when.microsecond) == (0, 0, 0, 0), (
+        f"compute_build_epoch() returned {epoch} = {when}, which is not local midnight"
+    )
+
+
+def test_build_epoch_is_stable_across_calls_within_one_build():
+    """Repeated calls must agree, so the TU and the manifest can never disagree.
+
+    Both consumers run inside the same `pio run` process but at different points in it
+    (pre script vs. post script). If the helper recomputed from the wall clock each
+    time, a build spanning local midnight would bake one epoch into the TU and write a
+    different one into the manifest.
+    """
+    assert hasattr(build_info, BUILD_EPOCH_HELPER), f"no {BUILD_EPOCH_HELPER}()"
+    assert build_info.compute_build_epoch() == build_info.compute_build_epoch()
+
+
+def test_no_extra_script_computes_the_build_epoch_inline():
+    """Every registered extra script must take the epoch from the shared helper."""
+    offenders = []
+    for entry in parse_extra_scripts():
+        _, rel = split_extra_script(entry)
+        path = os.path.join(REPO_ROOT, rel)
+        if not os.path.isfile(path):
+            continue
+        with open(path, errors="replace") as f:
+            if INLINE_EPOCH_COMPUTATION in f.read():
+                offenders.append(rel)
+    assert not offenders, (
+        f"these extra scripts compute the build epoch inline instead of calling "
+        f"build_info.{BUILD_EPOCH_HELPER}(): {offenders}. A second copy of the "
+        "computation can drift from the generated TU's value."
+    )
 
 
 def _require_runner():
