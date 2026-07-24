@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 
-"""Tests for bin/build_info.py (see GitHub issue #8).
+"""Tests for the build tooling in bin/ (see GitHub issue #8).
 
-These cover the pure, importable core that isolates the two volatile version
-macros (APP_VERSION, BUILD_EPOCH) into a single generated translation unit so
-they no longer land on the global src/ CCFLAGS and force a full recompile on
-every commit / every day.
+Most of these cover bin/build_info.py: the pure, importable core that isolates
+the two volatile version macros (APP_VERSION, BUILD_EPOCH) into a single
+generated translation unit so they no longer land on the global src/ CCFLAGS
+and force a full recompile on every commit / every day.
+
+The rest cover bin/run-build-tests.sh, the runner that makes this file (and
+every other build-tooling test) actually reachable from CI.
 """
 
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -23,6 +29,15 @@ SAMPLE_REPO = "meshtastic/firmware"
 SAMPLE_PREF_FLAG = "-DUSERPREFS_EXAMPLE=1"
 SAMPLE_EPOCH_INT = 1753315200
 SAMPLE_EPOCH_STR = "1753315200"
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BUILD_TEST_RUNNER = os.path.join(REPO_ROOT, "bin", "run-build-tests.sh")
+MAIN_MATRIX_WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "main_matrix.yml")
+# The build-tooling guard tests that must be discovered. Both were orphaned -
+# runnable only by hand - until bin/run-build-tests.sh started auto-discovering
+# them, which is exactly the failure mode the runner exists to prevent.
+KNOWN_BUILD_TESTS = ("bin/test_platformio_custom.py", "pio.test.sh")
+SUBPROCESS_TIMEOUT_SECONDS = 300
 
 
 def test_global_flags_exclude_volatile_macros():
@@ -95,6 +110,100 @@ def test_platformio_custom_uses_assemble_global_flags_no_global_volatile():
     assert "assemble_global_flags(" in src, "build script no longer calls assemble_global_flags()"
     assert "-DAPP_VERSION=" not in src, "global -DAPP_VERSION= injection present/re-introduced"
     assert "-DBUILD_EPOCH=" not in src, "global -DBUILD_EPOCH= injection present/re-introduced"
+
+
+def _require_runner():
+    """Fail with a message about the missing wiring, not an OSError from exec()."""
+    assert os.path.isfile(BUILD_TEST_RUNNER), (
+        f"{BUILD_TEST_RUNNER} does not exist: the build-tooling tests "
+        "(bin/test_*.py, *.test.sh) have no runner, so nothing - CI included - "
+        "can invoke them as a set"
+    )
+    return BUILD_TEST_RUNNER
+
+
+def _run(argv, cwd=REPO_ROOT):
+    return subprocess.run(
+        argv,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _scratch_runner_root():
+    """Copy the runner into a throwaway repo root so its discovery can be driven.
+
+    The runner resolves its root from its own location, so a copy at
+    <tmp>/bin/run-build-tests.sh discovers only the tests we plant in <tmp>.
+    mkdtemp() gives a unique dir per run, so concurrent copies of this test never
+    share a scratch tree. Returns the tmp root; the caller removes it.
+    """
+    root = tempfile.mkdtemp(prefix=f"build-tests-{os.getpid()}-")
+    os.makedirs(os.path.join(root, "bin"))
+    shutil.copy2(BUILD_TEST_RUNNER, os.path.join(root, "bin", "run-build-tests.sh"))
+    return root
+
+
+def test_build_test_runner_exists_and_is_executable():
+    """A repo-level runner for the build-tooling tests must exist and be runnable."""
+    runner = _require_runner()
+    assert os.access(runner, os.X_OK), f"{runner} is not executable"
+
+
+def test_build_test_runner_discovers_the_known_build_tests():
+    """Discovery - not a hardcoded list - must pick up both existing guard tests."""
+    runner = _require_runner()
+    result = _run([runner, "--list"])
+    assert result.returncode == 0, f"--list failed ({result.returncode}):\n{result.stdout}"
+    listed = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    for known in KNOWN_BUILD_TESTS:
+        assert known in listed, f"{known} was not discovered by the runner: {listed}"
+
+
+def test_build_test_runner_fails_when_a_discovered_test_fails():
+    """Mutation check: a failing discovered test must turn the runner's verdict red."""
+    _require_runner()
+    root = _scratch_runner_root()
+    try:
+        failing = os.path.join(root, "bin", "test_planted_failure.py")
+        with open(failing, "w") as f:
+            f.write("import sys\n\nsys.exit(1)\n")
+        result = _run([os.path.join(root, "bin", "run-build-tests.sh")], cwd=root)
+        assert result.returncode != 0, f"runner passed despite a failing test:\n{result.stdout}"
+        assert "RESULT: RED" in result.stdout, result.stdout
+        assert "test_planted_failure.py" in result.stdout, result.stdout
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_build_test_runner_fails_when_it_discovers_nothing():
+    """A runner that finds no tests must fail loudly, never report a silent green."""
+    _require_runner()
+    root = _scratch_runner_root()
+    try:
+        result = _run([os.path.join(root, "bin", "run-build-tests.sh")], cwd=root)
+        assert result.returncode != 0, f"runner passed having found no tests:\n{result.stdout}"
+        assert "RESULT: RED" in result.stdout, result.stdout
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_main_matrix_workflow_runs_the_build_test_runner():
+    """CI wiring (issue #8): the pre-merge gate must invoke the build-test runner.
+
+    main_matrix.yml is the workflow that runs on push, pull_request and
+    merge_group. If it never calls the runner, every build-tooling guard test is
+    decorative - it can only fail on a developer's machine, never in CI.
+    """
+    with open(MAIN_MATRIX_WORKFLOW) as f:
+        workflow = f.read()
+    assert "bin/run-build-tests.sh" in workflow, (
+        f"{MAIN_MATRIX_WORKFLOW} never invokes bin/run-build-tests.sh: the "
+        "build-tooling guard tests cannot fail CI"
+    )
 
 
 if __name__ == "__main__":
